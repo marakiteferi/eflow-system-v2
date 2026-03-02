@@ -63,7 +63,7 @@ const WorkflowBuilder = () => {
     
     try {
       // This is where the 'api' variable is actually used
-      const response = await api.post('/workflows', workflowData);
+     await api.post('/workflows', workflowData);
       alert('Workflow successfully saved to the database!');
       setWorkflowName('');
     } catch (error) {
