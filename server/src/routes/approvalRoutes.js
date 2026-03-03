@@ -11,11 +11,43 @@ const pool = new Pool({
 
 const otpStore = new Map();
 
+// Mailer Configuration
 const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST, port: process.env.SMTP_PORT, secure: process.env.SMTP_PORT == 465, 
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
 });
 
+// NEW: Universal Email Helper Function
+const sendNotificationEmail = async (userId, subject, message) => {
+    try {
+        const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [userId]);
+        if (userQuery.rows.length > 0) {
+            const { email, name } = userQuery.rows[0];
+            
+            // Print to terminal for easy testing
+            console.log(`\n📧 SENDING EMAIL TO: ${email} | SUBJECT: ${subject}`);
+            
+            await transporter.sendMail({
+                from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
+                to: email,
+                subject: subject,
+                html: `
+                    <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eaeaea; border-radius: 8px; max-width: 500px;">
+                        <h2 style="color: #4f46e5;">E-flow Notification</h2>
+                        <p>Hello ${name},</p>
+                        <p style="font-size: 16px; color: #374151;">${message}</p>
+                        <hr style="border: none; border-top: 1px solid #eaeaea; margin: 20px 0;" />
+                        <p style="font-size: 12px; color: #9ca3af;">Please log in to your dashboard to view the details.</p>
+                    </div>
+                `
+            });
+        }
+    } catch (err) {
+        console.error('Failed to send notification email:', err.message);
+    }
+};
+
+// POST: Request OTP
 router.post('/request-otp', authenticateToken, async (req, res) => {
     try {
         const { documentId } = req.body;
@@ -25,7 +57,7 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
         const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [req.user.id]);
         
         console.log(`\n======================================================`);
-        console.log(`🔑 DEVELOPMENT OTP FOR ${userQuery.rows[0].email}: ${otp}`);
+        console.log(`🔑 OTP FOR ${userQuery.rows[0].email}: ${otp}`);
         console.log(`======================================================\n`);
 
         res.status(200).json({ message: 'OTP generated successfully (Check Terminal)' });
@@ -35,6 +67,7 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
     }
 });
 
+// POST: Approve & Route Document
 router.post('/approve', authenticateToken, async (req, res) => {
     const { documentId, otp, comments } = req.body;
     const storedData = otpStore.get(req.user.id);
@@ -50,7 +83,8 @@ router.post('/approve', authenticateToken, async (req, res) => {
     try {
         await pool.query('BEGIN');
 
-        const docQuery = await pool.query('SELECT workflow_id, current_node_id FROM documents WHERE id = $1', [documentId]);
+        // Fetch document info including submitter to email them later
+        const docQuery = await pool.query('SELECT title, submitter_id, workflow_id, current_node_id FROM documents WHERE id = $1', [documentId]);
         const doc = docQuery.rows[0];
 
         let nextNodeId = null;
@@ -61,33 +95,31 @@ router.post('/approve', authenticateToken, async (req, res) => {
             const wfQuery = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [doc.workflow_id]);
             const flowData = typeof wfQuery.rows[0].flow_structure === 'string' ? JSON.parse(wfQuery.rows[0].flow_structure) : wfQuery.rows[0].flow_structure;
             
-            const nodes = flowData.nodes || [];
             const edges = flowData.edges || [];
+            const nodes = flowData.nodes || [];
             
-            // Find the arrow leaving the current node
             const nextEdge = edges.find(edge => edge.source === doc.current_node_id);
             
             if (nextEdge) {
                 nextNodeId = nextEdge.target;
                 const nextNode = nodes.find(n => n.id === nextNodeId);
-                
                 if (nextNode) {
-                    // FIX: Ensure the ID is properly converted to an integer, or set to null if it's "-- Any Staff --"
                     nextAssigneeId = nextNode.data?.assignee ? parseInt(nextNode.data.assignee, 10) : null;
                 }
                 isFinalStep = false;
             }
         }
 
-        console.log(`\n🚀 ROUTING ENGINE:`);
-        console.log(`Current Node: ${doc.current_node_id}`);
-        console.log(`Next Node: ${nextNodeId || 'NONE - Final Step'}`);
-        console.log(`Assigned To Staff ID: ${nextAssigneeId || 'Unassigned (Global Queue)'}\n`);
-
         if (isFinalStep) {
             await pool.query("UPDATE documents SET status = 'Approved', current_node_id = NULL, current_assignee_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1", [documentId]);
+            // NOTIFY STUDENT: Fully Approved
+            await sendNotificationEmail(doc.submitter_id, 'Document Fully Approved!', `Great news! Your document <b>"${doc.title}"</b> has passed all review stages and is fully approved.`);
         } else {
             await pool.query("UPDATE documents SET current_node_id = $1, current_assignee_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3", [nextNodeId, nextAssigneeId, documentId]);
+            // NOTIFY STAFF: New file in queue
+            if (nextAssigneeId) {
+                await sendNotificationEmail(nextAssigneeId, 'New Document Ready for Review', `A new document <b>"${doc.title}"</b> has been routed to your queue for review.`);
+            }
         }
 
         const nodeLogLabel = doc.current_node_id || 'System';
@@ -107,17 +139,31 @@ router.post('/approve', authenticateToken, async (req, res) => {
     }
 });
 
+// POST: Reject a document
 router.post('/reject', authenticateToken, async (req, res) => {
-    // ... (Keep your exact existing reject route code here) ...
     const { documentId, comments } = req.body;
     if (!comments || comments.trim() === '') return res.status(400).json({ message: 'A rejection reason is required' });
+    
     try {
         await pool.query('BEGIN');
         await pool.query("UPDATE documents SET status = 'Rejected', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [documentId]);
-        const docQuery = await pool.query('SELECT current_node_id FROM documents WHERE id = $1', [documentId]);
-        await pool.query("INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Rejected', $4)", [documentId, req.user.id, docQuery.rows[0]?.current_node_id || 'System', comments]);
+        
+        // Get the doc details so we can email the student
+        const docQuery = await pool.query('SELECT title, submitter_id, current_node_id FROM documents WHERE id = $1', [documentId]);
+        const doc = docQuery.rows[0];
+
+        await pool.query("INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Rejected', $4)", [documentId, req.user.id, doc.current_node_id || 'System', comments]);
         await pool.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Document Rejected - Revision Required')", [documentId, req.user.id]);
+        
         await pool.query('COMMIT');
+
+        // NOTIFY STUDENT: Rejected with reason
+        await sendNotificationEmail(
+            doc.submitter_id, 
+            'Action Required: Document Rejected', 
+            `Your document <b>"${doc.title}"</b> requires your attention.<br><br><b>Feedback:</b> ${comments}<br><br>Please use the "Fix & Resubmit" button on your dashboard to upload a corrected version.`
+        );
+
         res.status(200).json({ message: 'Document rejected successfully' });
     } catch (err) {
         await pool.query('ROLLBACK');

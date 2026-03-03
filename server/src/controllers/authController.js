@@ -63,15 +63,22 @@ const loginUser = async (req, res) => {
             { expiresIn: '1h' }
         );
 
+        // NEW: Log the successful login to the audit trail
+        await pool.query(
+            "INSERT INTO audit_logs (user_id, action) VALUES ($1, 'User logged into the system')", 
+            [user.rows[0].id]
+        );
+
         res.status(200).json({ 
-    token, 
-    user: { 
-        id: user.rows[0].id, 
-        name: user.rows[0].name, 
-        email: user.rows[0].email,
-        role_id: user.rows[0].role_id // <-- This was missing!
-    } 
-});} catch (error) {
+            token, 
+            user: { 
+                id: user.rows[0].id, 
+                name: user.rows[0].name, 
+                email: user.rows[0].email,
+                role_id: user.rows[0].role_id 
+            } 
+        });
+    } catch (error) {
         console.error(error.message);
         res.status(500).json({ message: 'Server error during login' });
     }

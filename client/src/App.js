@@ -1,3 +1,4 @@
+import Profile from './pages/Profile';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -19,6 +20,8 @@ function App() {
               </ProtectedRoute>
             } 
           />
+          <Route 
+          path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
           
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>

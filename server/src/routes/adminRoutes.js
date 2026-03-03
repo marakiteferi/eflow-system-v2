@@ -85,4 +85,29 @@ router.put('/users/:id/role', authenticateToken, verifyAdmin, async (req, res) =
         res.status(500).json({ message: 'Error updating user role' });
     }
 });
+// GET: Fetch system statistics for the Admin Dashboard Overview
+router.get('/stats', authenticateToken, verifyAdmin, async (req, res) => {
+    try {
+        const totalDocs = await pool.query('SELECT COUNT(*) FROM documents');
+        const approvedDocs = await pool.query("SELECT COUNT(*) FROM documents WHERE status = 'Approved'");
+        const pendingDocs = await pool.query("SELECT COUNT(*) FROM documents WHERE status = 'Pending'");
+        const rejectedDocs = await pool.query("SELECT COUNT(*) FROM documents WHERE status = 'Rejected'");
+        const totalUsers = await pool.query('SELECT COUNT(*) FROM users');
+        const totalWorkflows = await pool.query('SELECT COUNT(*) FROM workflows');
+
+        res.status(200).json({
+            documents: {
+                total: parseInt(totalDocs.rows[0].count),
+                approved: parseInt(approvedDocs.rows[0].count),
+                pending: parseInt(pendingDocs.rows[0].count),
+                rejected: parseInt(rejectedDocs.rows[0].count)
+            },
+            users: parseInt(totalUsers.rows[0].count),
+            workflows: parseInt(totalWorkflows.rows[0].count)
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error fetching system stats' });
+    }
+});
 module.exports = router;
