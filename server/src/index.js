@@ -1,3 +1,4 @@
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -10,7 +11,7 @@ const PORT = process.env.PORT || 5000;
 // 2. Middleware
 app.use(cors());
 app.use(express.json());
-
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 // 3. Database Pool
 const pool = new Pool({
     user: process.env.DB_USER,
@@ -34,7 +35,7 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/workflows', require('./routes/workflowRoutes'));
 app.use('/api/documents', require('./routes/documentRoutes'));
 app.use('/api/approvals', require('./routes/approvalRoutes')); // We will build this next!
-
+app.use('/api/admin', require('./routes/adminRoutes'));
 // 5. Start Server
 app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);

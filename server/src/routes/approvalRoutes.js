@@ -6,18 +6,23 @@ const nodemailer = require('nodemailer');
 const authenticateToken = require('../middleware/authMiddleware');
 
 const pool = new Pool({
-    user: process.env.DB_USER, host: process.env.DB_HOST,
-    database: process.env.DB_NAME, password: process.env.DB_PASSWORD, port: process.env.DB_PORT,
+    user: process.env.DB_USER, 
+    host: process.env.DB_HOST,
+    database: process.env.DB_NAME, 
+    password: process.env.DB_PASSWORD, 
+    port: process.env.DB_PORT,
 });
 
 const otpStore = new Map();
 
-// Configure Nodemailer Transporter
+// Configure Scalable SMTP Transporter
 const transporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: process.env.SMTP_HOST,
+    port: process.env.SMTP_PORT,
+    secure: process.env.SMTP_PORT == 465, // true for port 465, false for 587 or 2525
     auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
     }
 });
 
@@ -26,6 +31,7 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
     try {
         const { documentId } = req.body;
         
+        // 1. Generate the OTP
         const otp = crypto.randomInt(100000, 999999).toString();
         otpStore.set(req.user.id, { otp, documentId, expires: Date.now() + 5 * 60000 });
 
@@ -33,8 +39,15 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
         const userEmail = userQuery.rows[0].email;
         const userName = userQuery.rows[0].name;
 
+        // --- DEVELOPMENT BYPASS ---
+        // This guarantees you can see the OTP in your backend terminal immediately
+        console.log(`\n======================================================`);
+        console.log(`🔑 DEVELOPMENT OTP FOR ${userEmail}: ${otp}`);
+        console.log(`======================================================\n`);
+
+        // 2. Attempt to send the email
         const mailOptions = {
-            from: process.env.EMAIL_USER,
+            from: `"System Admin" <${process.env.FROM_EMAIL}>`,
             to: userEmail,
             subject: 'System 2FA Approval Code',
             html: `
@@ -54,7 +67,9 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
         res.status(200).json({ message: 'OTP generated and emailed successfully' });
     } catch (err) {
         console.error('Email error:', err);
-        res.status(500).json({ message: 'Error generating or sending OTP' });
+        // Even if the email fails (e.g., bad credentials), we still send a 200 OK 
+        // to the frontend so you can use the terminal OTP to continue testing!
+        res.status(200).json({ message: 'Check your terminal for the OTP' });
     }
 });
 
