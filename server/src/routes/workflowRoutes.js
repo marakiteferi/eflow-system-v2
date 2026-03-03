@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { Pool } = require('pg');
+const authenticateToken = require('../middleware/authMiddleware');
 
 const pool = new Pool({
     user: process.env.DB_USER,
@@ -10,28 +11,47 @@ const pool = new Pool({
     port: process.env.DB_PORT,
 });
 
-// POST /api/workflows
-router.post('/', async (req, res) => {
+// POST: Save a new workflow AND write to the Audit Log
+router.post('/', authenticateToken, async (req, res) => {
+    const { name, flow_structure } = req.body;
+    
+    if (!name) {
+        return res.status(400).json({ message: 'Workflow name is required' });
+    }
+
     try {
-        const { name, flow_structure } = req.body;
+        await pool.query('BEGIN'); // Start secure transaction
 
-        if (!name || !flow_structure) {
-            return res.status(400).json({ message: 'Workflow name and structure are required' });
-        }
-
-        // Insert the JSON object directly into the JSONB column
-        const newWorkflow = await pool.query(
+        // 1. Save the actual workflow
+        const result = await pool.query(
             'INSERT INTO workflows (name, flow_structure) VALUES ($1, $2) RETURNING *',
             [name, flow_structure]
         );
+        
+        // 2. Write to the Audit Log!
+        await pool.query(
+            "INSERT INTO audit_logs (user_id, action) VALUES ($1, $2)",
+            [req.user.id, `Created new workflow: '${name}'`]
+        );
 
-        res.status(201).json({ 
-            message: 'Workflow saved successfully', 
-            workflow: newWorkflow.rows[0] 
-        });
+        await pool.query('COMMIT'); // Save transaction
+        res.status(201).json(result.rows[0]);
     } catch (err) {
-        console.error('Error saving workflow:', err.message);
-        res.status(500).json({ message: 'Server error saving workflow' });
+        await pool.query('ROLLBACK');
+        console.error('Error saving workflow:', err);
+        res.status(500).json({ message: 'Error saving workflow' });
+    }
+});
+
+// GET: Fetch all available workflows for the upload dropdown (CRASH-PROOF)
+router.get('/', authenticateToken, async (req, res) => {
+    try {
+        // Sorting by 'id' instead of 'created_at' ensures it won't crash if your table schema differs slightly
+        const result = await pool.query('SELECT id, name FROM workflows ORDER BY id DESC');
+        res.status(200).json(result.rows);
+    } catch (err) {
+        console.error('Error fetching workflows:', err);
+        res.status(500).json({ message: 'Error fetching workflows' });
     }
 });
 

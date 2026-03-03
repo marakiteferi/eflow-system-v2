@@ -1,116 +1,126 @@
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import ReactFlow, { addEdge, applyNodeChanges, applyEdgeChanges, Background, Controls, Handle, Position } from 'reactflow';
+import 'reactflow/dist/style.css';
 import api from '../api';
-import { useCallback, useState } from 'react';
-import {
-  ReactFlow,
-  MiniMap,
-  Controls,
-  Background,
-  useNodesState,
-  useEdgesState,
-  addEdge,
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
 
-// The default starting point for any new workflow
-const initialNodes = [
-  { 
-    id: '1', 
-    position: { x: 250, y: 50 }, 
-    data: { label: 'Start: Document Submitted' }, 
-    type: 'input',
-    style: { backgroundColor: '#e0f2fe', border: '2px solid #0284c7', borderRadius: '8px', padding: '10px' }
-  },
-];
-
-const initialEdges = [];
-
-let idCounter = 2;
-const getId = () => `${idCounter++}`;
+// --- Custom Node Component ---
+const AssignableNode = ({ id, data }) => {
+  return (
+    <div className="bg-white border-2 border-indigo-500 rounded-lg p-3 shadow-md min-w-[180px]">
+      <Handle type="target" position={Position.Top} className="w-3 h-3 bg-indigo-500" />
+      <div className="font-bold text-sm text-gray-800 border-b pb-1 mb-2">
+         <input 
+           type="text" 
+           value={data.label} 
+           onChange={(e) => data.onLabelChange(id, e.target.value)}
+           className="w-full outline-none nodrag bg-transparent"
+           placeholder="Step Name"
+         />
+      </div>
+      <div className="text-xs text-gray-500 mb-1">Assign to:</div>
+      <select 
+        className="w-full text-xs border border-gray-300 rounded p-1 nodrag bg-white"
+        value={data.assignee || ''}
+        onChange={(e) => data.onAssign(id, e.target.value)}
+      >
+        <option value="">-- Any Staff --</option>
+        {data.staffList && data.staffList.map(staff => (
+          <option key={staff.id} value={staff.id}>{staff.name}</option>
+        ))}
+      </select>
+      <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-indigo-500" />
+    </div>
+  );
+};
 
 const WorkflowBuilder = () => {
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [nodes, setNodes] = useState([]);
+  const [edges, setEdges] = useState([]);
   const [workflowName, setWorkflowName] = useState('');
+  const [staffList, setStaffList] = useState([]);
+  
+  // Register the custom node type
+  const nodeTypes = useMemo(() => ({ assignable: AssignableNode }), []);
 
-  // Handles drawing lines between nodes
-  const onConnect = useCallback(
-    (params) => setEdges((eds) => addEdge(params, eds)),
-    [setEdges],
-  );
+  useEffect(() => {
+    // Fetch only Staff members for the dropdowns
+    const fetchStaff = async () => {
+      try {
+        const res = await api.get('/admin/users');
+        setStaffList(res.data.filter(u => u.role_id === 2 || u.role_name === 'Staff'));
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    fetchStaff();
+  }, []);
 
-  // Adds a new step to the canvas
-  const handleAddNode = () => {
+  const onNodesChange = useCallback((changes) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
+  const onEdgesChange = useCallback((changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
+  const onConnect = useCallback((params) => setEdges((eds) => addEdge(params, eds)), []);
+
+  const onLabelChange = (id, newLabel) => {
+    setNodes((nds) => nds.map((node) => {
+      if (node.id === id) node.data = { ...node.data, label: newLabel };
+      return node;
+    }));
+  };
+
+  const onAssign = (id, newAssignee) => {
+    setNodes((nds) => nds.map((node) => {
+      if (node.id === id) node.data = { ...node.data, assignee: newAssignee };
+      return node;
+    }));
+  };
+
+  const addNode = () => {
     const newNode = {
-      id: getId(),
-      position: { x: Math.random() * 200 + 100, y: Math.random() * 200 + 100 },
-      data: { label: `New Step ${idCounter - 1}` },
-      style: { backgroundColor: '#ffffff', border: '2px solid #64748b', borderRadius: '8px', padding: '10px' }
+      id: `node_${Date.now()}`,
+      type: 'assignable',
+      position: { x: 250, y: nodes.length * 100 + 50 },
+      data: { label: `Step ${nodes.length + 1}`, staffList, onAssign, onLabelChange, assignee: '' },
     };
     setNodes((nds) => nds.concat(newNode));
   };
 
-  // Extracts the JSON to send to the backend
- const handleSaveWorkflow = async () => {
-    if (!workflowName) {
-      alert('Please enter a name for this workflow.');
-      return;
-    }
-    
-    const workflowData = {
-      name: workflowName,
-      flow_structure: { nodes, edges }
-    };
-    
+  // Re-inject functions into nodes if the staff list updates
+  useEffect(() => {
+    setNodes((nds) => nds.map(node => ({
+      ...node,
+      data: { ...node.data, staffList, onAssign, onLabelChange }
+    })));
+  }, [staffList]);
+
+  const saveWorkflow = async () => {
+    if (!workflowName) return alert('Enter a workflow name');
     try {
-      // This is where the 'api' variable is actually used
-     await api.post('/workflows', workflowData);
-      alert('Workflow successfully saved to the database!');
-      setWorkflowName('');
-    } catch (error) {
-      console.error('Failed to save workflow:', error);
-      alert('Error saving workflow. Check console for details.');
+      const flowData = JSON.stringify({ nodes, edges });
+      await api.post('/workflows', { name: workflowName, flow_structure: flowData });
+      alert('Workflow saved successfully!');
+      setNodes([]); setEdges([]); setWorkflowName('');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save workflow');
     }
   };
-  return (
-    <div className="flex flex-col h-[600px] border border-gray-300 rounded-lg overflow-hidden bg-white shadow-sm">
-      {/* Builder Toolbar */}
-      <div className="p-4 bg-gray-50 border-b border-gray-300 flex justify-between items-center">
-        <div className="flex gap-4 items-center">
-          <input 
-            type="text" 
-            placeholder="Workflow Name (e.g., Leave Request)" 
-            className="px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-            value={workflowName}
-            onChange={(e) => setWorkflowName(e.target.value)}
-          />
-          <button 
-            onClick={handleAddNode}
-            className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 text-sm font-medium transition-colors"
-          >
-            + Add Step
-          </button>
-        </div>
-        <button 
-          onClick={handleSaveWorkflow}
-          className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm font-medium transition-colors"
-        >
-          Save Workflow
-        </button>
-      </div>
 
-      {/* Drag and Drop Canvas */}
-      <div className="flex-grow">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          fitView
-        >
+  return (
+    <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+      <div className="flex gap-4 mb-4">
+        <input 
+          type="text" 
+          placeholder="Workflow Name (e.g., Clearance Form)" 
+          value={workflowName}
+          onChange={(e) => setWorkflowName(e.target.value)}
+          className="flex-grow px-3 py-2 border rounded-md"
+        />
+        <button onClick={addNode} className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Add Step</button>
+        <button onClick={saveWorkflow} className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700">Save Workflow</button>
+      </div>
+      <div className="h-[500px] border border-gray-200 rounded-md bg-gray-50">
+        <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} nodeTypes={nodeTypes}>
+          <Background />
           <Controls />
-          <MiniMap />
-          <Background variant="dots" gap={12} size={1} />
         </ReactFlow>
       </div>
     </div>
