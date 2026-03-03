@@ -3,7 +3,6 @@ import ReactFlow, { addEdge, applyNodeChanges, applyEdgeChanges, Background, Con
 import 'reactflow/dist/style.css';
 import api from '../api';
 
-// --- Custom Node Component ---
 const AssignableNode = ({ id, data }) => {
   return (
     <div className="bg-white border-2 border-indigo-500 rounded-lg p-3 shadow-md min-w-[180px]">
@@ -39,11 +38,22 @@ const WorkflowBuilder = () => {
   const [workflowName, setWorkflowName] = useState('');
   const [staffList, setStaffList] = useState([]);
   
-  // Register the custom node type
+  // NEW: State for managing existing workflows
+  const [savedWorkflows, setSavedWorkflows] = useState([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
+
   const nodeTypes = useMemo(() => ({ assignable: AssignableNode }), []);
 
+  const fetchWorkflows = async () => {
+    try {
+      const res = await api.get('/workflows');
+      setSavedWorkflows(res.data);
+    } catch (err) {
+      console.error('Failed to load workflows', err);
+    }
+  };
+
   useEffect(() => {
-    // Fetch only Staff members for the dropdowns
     const fetchStaff = async () => {
       try {
         const res = await api.get('/admin/users');
@@ -53,6 +63,7 @@ const WorkflowBuilder = () => {
       }
     };
     fetchStaff();
+    fetchWorkflows();
   }, []);
 
   const onNodesChange = useCallback((changes) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
@@ -83,7 +94,6 @@ const WorkflowBuilder = () => {
     setNodes((nds) => nds.concat(newNode));
   };
 
-  // Re-inject functions into nodes if the staff list updates
   useEffect(() => {
     setNodes((nds) => nds.map(node => ({
       ...node,
@@ -91,35 +101,117 @@ const WorkflowBuilder = () => {
     })));
   }, [staffList]);
 
+  // NEW: Load a workflow onto the canvas
+  const handleLoadWorkflow = (e) => {
+    const wfId = e.target.value;
+    setSelectedWorkflowId(wfId);
+
+    if (!wfId) {
+      // Clear canvas if "Create New" is selected
+      setNodes([]); setEdges([]); setWorkflowName('');
+      return;
+    }
+
+    const wf = savedWorkflows.find(w => w.id === parseInt(wfId));
+    if (wf) {
+      setWorkflowName(wf.name);
+      const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
+      
+      const loadedNodes = (flowData.nodes || []).map(node => ({
+        ...node,
+        data: { ...node.data, staffList, onAssign, onLabelChange }
+      }));
+      
+      setNodes(loadedNodes);
+      setEdges(flowData.edges || []);
+    }
+  };
+
+  // UPDATED: Handle both Create and Update
   const saveWorkflow = async () => {
     if (!workflowName) return alert('Enter a workflow name');
     try {
       const flowData = JSON.stringify({ nodes, edges });
-      await api.post('/workflows', { name: workflowName, flow_structure: flowData });
-      alert('Workflow saved successfully!');
-      setNodes([]); setEdges([]); setWorkflowName('');
+      
+      if (selectedWorkflowId) {
+        // Update existing
+        await api.put(`/workflows/${selectedWorkflowId}`, { name: workflowName, flow_structure: flowData });
+        alert('Workflow updated successfully!');
+      } else {
+        // Create new
+        await api.post('/workflows', { name: workflowName, flow_structure: flowData });
+        alert('New workflow created successfully!');
+      }
+      
+      fetchWorkflows(); // Refresh the dropdown list
     } catch (err) {
       console.error(err);
       alert('Failed to save workflow');
     }
   };
 
+  // NEW: Delete Workflow Handler
+  const deleteWorkflow = async () => {
+    if (!selectedWorkflowId) return;
+    const confirmDelete = window.confirm('Are you sure you want to delete this workflow?');
+    if (!confirmDelete) return;
+
+    try {
+      await api.delete(`/workflows/${selectedWorkflowId}`);
+      alert('Workflow deleted!');
+      setNodes([]); setEdges([]); setWorkflowName(''); setSelectedWorkflowId('');
+      fetchWorkflows();
+    } catch (err) {
+      console.error(err);
+      alert(err.response?.data?.message || 'Failed to delete workflow.');
+    }
+  };
+
   return (
-    <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+    <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+      
+      {/* Top Bar: Workflow Selector */}
+      <div className="flex gap-4 mb-6 pb-4 border-b border-gray-200 items-center">
+        <span className="text-sm font-bold text-gray-700">Manage:</span>
+        <select 
+          value={selectedWorkflowId} 
+          onChange={handleLoadWorkflow}
+          className="flex-grow px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500"
+        >
+          <option value="">+ Create New Workflow</option>
+          {savedWorkflows.map(wf => (
+            <option key={wf.id} value={wf.id}>{wf.name}</option>
+          ))}
+        </select>
+        
+        {selectedWorkflowId && (
+          <button onClick={deleteWorkflow} className="bg-red-50 text-red-600 px-4 py-2 rounded-md hover:bg-red-100 font-bold transition-colors">
+            Delete Flow
+          </button>
+        )}
+      </div>
+
+      {/* Builder Tools */}
       <div className="flex gap-4 mb-4">
         <input 
           type="text" 
-          placeholder="Workflow Name (e.g., Clearance Form)" 
+          placeholder="Workflow Name" 
           value={workflowName}
           onChange={(e) => setWorkflowName(e.target.value)}
-          className="flex-grow px-3 py-2 border rounded-md"
+          className="flex-grow px-3 py-2 border border-gray-300 rounded-md"
         />
-        <button onClick={addNode} className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Add Step</button>
-        <button onClick={saveWorkflow} className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700">Save Workflow</button>
+        <button onClick={addNode} className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 font-medium shadow-sm">
+          Add Step
+        </button>
+        <button onClick={saveWorkflow} className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 font-medium shadow-sm">
+          {selectedWorkflowId ? 'Update Workflow' : 'Save New Workflow'}
+        </button>
       </div>
-      <div className="h-[500px] border border-gray-200 rounded-md bg-gray-50">
+
+      {/* Canvas */}
+      <div className="h-[500px] border-2 border-dashed border-gray-300 rounded-md bg-gray-50 relative overflow-hidden">
         <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} nodeTypes={nodeTypes}>
-          <Background />
+          <Background color="#ccc" gap={16} />
           <Controls />
         </ReactFlow>
       </div>
