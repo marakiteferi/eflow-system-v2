@@ -1,3 +1,4 @@
+const startSlaMonitor = require('./cron/slaMonitor');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
@@ -38,6 +39,7 @@ app.use('/api/approvals', require('./routes/approvalRoutes')); // We will build 
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/users', require('./routes/userRoutes')); // For OOO and delegation
 // 5. Start Server
+startSlaMonitor(); // Activate the SLA monitoring engine
 app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
 });

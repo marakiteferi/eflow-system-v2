@@ -4,7 +4,7 @@ import 'reactflow/dist/style.css';
 import api from '../api';
 
 // ==========================================
-// 1. CUSTOM NODE: Standard Task (NOW WITH CHECKLIST!)
+// 1. CUSTOM NODE: Standard Task (Checklist + SLA!)
 // ==========================================
 const TaskNode = ({ id, data }) => {
   const [newTask, setNewTask] = useState('');
@@ -38,7 +38,27 @@ const TaskNode = ({ id, data }) => {
         {data.staffList && data.staffList.map(staff => <option key={staff.id} value={staff.id}>{staff.name}</option>)}
       </select>
 
-      {/* NEW: Mandatory Checklist Builder */}
+      {/* NEW: 3-Tier SLA Builder */}
+      <div className="bg-red-50 border border-red-200 rounded p-2 nodrag mb-3 mt-1">
+        <div className="text-[10px] font-bold text-red-700 uppercase tracking-wider mb-2 border-b border-red-200 pb-1">⏱️ SLA Escalation (Hours)</div>
+        
+        <div className="flex justify-between items-center mb-1">
+          <span className="text-[10px] text-gray-700 font-bold">1. Reminder</span>
+          <input type="number" min="0" placeholder="e.g. 24" value={data.reminderHours || ''} onChange={(e) => data.onSlaChange(id, 'reminderHours', e.target.value)} className="w-12 text-[10px] border border-red-300 rounded p-1 text-center" />
+        </div>
+        
+        <div className="flex justify-between items-center mb-1">
+          <span className="text-[10px] text-amber-700 font-bold">2. At Risk Flag</span>
+          <input type="number" min="0" placeholder="e.g. 48" value={data.warningHours || ''} onChange={(e) => data.onSlaChange(id, 'warningHours', e.target.value)} className="w-12 text-[10px] border border-amber-300 rounded p-1 text-center" />
+        </div>
+
+        <div className="flex justify-between items-center">
+          <span className="text-[10px] text-red-700 font-bold">3. Hard Escalate</span>
+          <input type="number" min="0" placeholder="e.g. 72" value={data.escalationHours || ''} onChange={(e) => data.onSlaChange(id, 'escalationHours', e.target.value)} className="w-12 text-[10px] border border-red-500 rounded p-1 text-center font-bold" />
+        </div>
+      </div>
+
+      {/* Mandatory Checklist Builder */}
       <div className="bg-gray-50 border border-gray-200 rounded p-2 nodrag">
         <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Mandatory Checklist</div>
         
@@ -140,7 +160,9 @@ const WorkflowBuilder = () => {
   const onAssign = (id, newAssignee) => setNodes(nds => nds.map(n => n.id === id ? { ...n, data: { ...n.data, assignee: newAssignee } } : n));
   const onConditionChange = (id, newValue) => setNodes(nds => nds.map(n => n.id === id ? { ...n, data: { ...n.data, conditionValue: newValue } } : n));
   
-  // NEW: Checklist State Handlers
+ // Updated SLA State Handler for 3 distinct inputs
+  const onSlaChange = (id, field, newValue) => setNodes(nds => nds.map(n => n.id === id ? { ...n, data: { ...n.data, [field]: newValue } } : n));
+  // Checklist State Handlers
   const onAddChecklistItem = (id, itemStr) => {
     setNodes(nds => nds.map(n => {
       if (n.id === id) {
@@ -161,11 +183,19 @@ const WorkflowBuilder = () => {
     }));
   };
 
-  // Toolbar Actions
   const addTaskNode = () => {
     const newNode = {
       id: `task_${Date.now()}`, type: 'task', position: { x: 250, y: nodes.length * 150 + 50 },
-      data: { label: `Review Step`, staffList, assignee: '', checklist: [], onAssign, onLabelChange, onAddChecklistItem, onRemoveChecklistItem },
+      data: { 
+        label: `Review Step`, 
+        staffList, 
+        assignee: '', 
+        reminderHours: '',   // <-- NEW
+        warningHours: '',    // <-- NEW
+        escalationHours: '', // <-- NEW
+        checklist: [], 
+        onAssign, onLabelChange, onAddChecklistItem, onRemoveChecklistItem, onSlaChange 
+      },
     };
     setNodes((nds) => nds.concat(newNode));
   };
@@ -182,11 +212,11 @@ const WorkflowBuilder = () => {
   useEffect(() => {
     setNodes((nds) => nds.map(node => ({
       ...node,
-      data: { ...node.data, staffList, onAssign, onLabelChange, onConditionChange, onAddChecklistItem, onRemoveChecklistItem }
+      data: { ...node.data, staffList, onAssign, onLabelChange, onConditionChange, onAddChecklistItem, onRemoveChecklistItem, onSlaChange }
     })));
   }, [staffList]);
 
-  const handleLoadWorkflow = (e) => {
+const handleLoadWorkflow = (e) => {
     const wfId = e.target.value;
     setSelectedWorkflowId(wfId);
     if (!wfId) { setNodes([]); setEdges([]); setWorkflowName(''); return; }
@@ -195,8 +225,23 @@ const WorkflowBuilder = () => {
     if (wf) {
       setWorkflowName(wf.name);
       const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
+      
       const loadedNodes = (flowData.nodes || []).map(node => ({
-        ...node, data: { ...node.data, checklist: node.data.checklist || [], staffList, onAssign, onLabelChange, onConditionChange, onAddChecklistItem, onRemoveChecklistItem }
+        ...node, 
+        data: { 
+          ...node.data, 
+          checklist: node.data.checklist || [], 
+          reminderHours: node.data.reminderHours || '',     // <-- NEW
+          warningHours: node.data.warningHours || '',       // <-- NEW
+          escalationHours: node.data.escalationHours || '', // <-- NEW
+          staffList, 
+          onAssign, 
+          onLabelChange, 
+          onConditionChange, 
+          onAddChecklistItem, 
+          onRemoveChecklistItem, 
+          onSlaChange 
+        }
       }));
       setNodes(loadedNodes); setEdges(flowData.edges || []);
     }
