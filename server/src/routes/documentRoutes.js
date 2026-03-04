@@ -4,7 +4,7 @@ const multer = require('multer');
 const { Pool } = require('pg');
 const authenticateToken = require('../middleware/authMiddleware');
 const Tesseract = require('tesseract.js');
-const fs = require('fs'); 
+const fs = require('fs');
 const pdfParse = require('pdf-parse');
 
 const pool = new Pool({
@@ -21,7 +21,7 @@ const extractText = async (filePath, mimetype) => {
     try {
         if (mimetype === 'application/pdf') {
             const dataBuffer = fs.readFileSync(filePath);
-            const pdfData = await pdfParse(dataBuffer); 
+            const pdfData = await pdfParse(dataBuffer);
             if (!pdfData || !pdfData.text || pdfData.text.trim() === '') {
                 return '[System Note: No digital text found. If this is a scanned PDF, please upload it as an Image (PNG/JPG) so the OCR system can read it.]';
             }
@@ -44,12 +44,12 @@ const resolveAssignee = async (dbPool, initialId) => {
     if (!initialId) return null;
     let currentId = initialId;
     let visited = new Set(); // Prevents infinite loops if User A delegates to B, and B delegates to A!
-    
+
     while (currentId && !visited.has(currentId)) {
         visited.add(currentId);
         const res = await dbPool.query('SELECT is_out_of_office, delegate_id FROM users WHERE id = $1', [currentId]);
         if (res.rows.length === 0) break;
-        
+
         const { is_out_of_office, delegate_id } = res.rows[0];
         if (is_out_of_office && delegate_id) {
             console.log(`\n🔄 DELEGATION TRIGGERED: User ${currentId} is OOO. Forwarding to Delegate ${delegate_id}`);
@@ -70,7 +70,9 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
         if (!title || !req.file) return res.status(400).json({ message: 'Title and document are required.' });
 
         let initialNodeId = null;
-        let initialAssigneeId = null; 
+        let initialAssigneeId = null;
+        // Pitfall 3 FIX: originalSlaDeadline is set once at upload time and NEVER changed again.
+        let originalSlaDeadline = null;
 
         if (workflow_id) {
             const wfQuery = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [workflow_id]);
@@ -82,10 +84,16 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
                 const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
                 if (startNode) {
                     initialNodeId = startNode.id;
-                    let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null; 
-                    
+                    let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
+
                     // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
-                    initialAssigneeId = await resolveAssignee(pool, rawAssigneeId); 
+                    initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
+
+                    // Pitfall 3: Stamp the original SLA deadline from the first node's slaHours
+                    const slaHours = startNode.data?.slaHours ? parseFloat(startNode.data.slaHours) : null;
+                    if (slaHours) {
+                        originalSlaDeadline = new Date(Date.now() + slaHours * 60 * 60 * 1000).toISOString();
+                    }
                 }
             }
         }
@@ -93,8 +101,9 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
         const extracted_text = await extractText(req.file.path, req.file.mimetype);
 
         const newDoc = await pool.query(
-            "INSERT INTO documents (title, file_path, extracted_text, submitter_id, workflow_id, current_node_id, current_assignee_id, metadata_tag, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Pending') RETURNING *",
-            [title, req.file.path, extracted_text, submitter_id, workflow_id || null, initialNodeId, initialAssigneeId, metadata_tag || null]
+            `INSERT INTO documents (title, file_path, extracted_text, submitter_id, workflow_id, current_node_id, current_assignee_id, metadata_tag, status, original_sla_deadline) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Pending', $9) RETURNING *`,
+            [title, req.file.path, extracted_text, submitter_id, workflow_id || null, initialNodeId, initialAssigneeId, metadata_tag || null, originalSlaDeadline]
         );
 
         res.status(201).json({ message: 'Document submitted', document: newDoc.rows[0] });
@@ -116,6 +125,7 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
         const workflow_id = docQuery.rows[0].workflow_id;
         let initialNodeId = null;
         let initialAssigneeId = null;
+        let originalSlaDeadline = null;
 
         if (workflow_id) {
             const wfQuery = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [workflow_id]);
@@ -123,14 +133,20 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
                 const flowData = typeof wfQuery.rows[0].flow_structure === 'string' ? JSON.parse(wfQuery.rows[0].flow_structure) : wfQuery.rows[0].flow_structure;
                 const nodes = flowData.nodes || [];
                 const edges = flowData.edges || [];
-                
+
                 const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
                 if (startNode) {
                     initialNodeId = startNode.id;
                     let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
-                    
+
                     // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
                     initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
+
+                    // Pitfall 3: Reset original SLA deadline on resubmit (fresh document lifecycle)
+                    const slaHours = startNode.data?.slaHours ? parseFloat(startNode.data.slaHours) : null;
+                    if (slaHours) {
+                        originalSlaDeadline = new Date(Date.now() + slaHours * 60 * 60 * 1000).toISOString();
+                    }
                 }
             }
         }
@@ -138,8 +154,11 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
         const extracted_text = await extractText(req.file.path, req.file.mimetype);
 
         await pool.query(
-            "UPDATE documents SET file_path = $1, extracted_text = $2, status = 'Pending', current_node_id = $3, current_assignee_id = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5",
-            [req.file.path, extracted_text, initialNodeId, initialAssigneeId, documentId]
+            `UPDATE documents SET file_path = $1, extracted_text = $2, status = 'Pending',
+             current_node_id = $3, current_assignee_id = $4,
+             original_sla_deadline = $5, delegation_sla_deadline = NULL,
+             updated_at = CURRENT_TIMESTAMP WHERE id = $6`,
+            [req.file.path, extracted_text, initialNodeId, initialAssigneeId, originalSlaDeadline, documentId]
         );
 
         await pool.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Document Resubmitted by User')", [documentId, req.user.id]);
@@ -173,7 +192,7 @@ router.get('/', authenticateToken, async (req, res) => {
         if (req.user.role_id === 1) {
             query = "SELECT d.*, (SELECT comments FROM approvals a WHERE a.document_id = d.id ORDER BY id DESC LIMIT 1) as latest_comment FROM documents d WHERE d.submitter_id = $1 ORDER BY d.created_at DESC";
             values = [req.user.id];
-        } else if (req.user.role_id === 2 || req.user.role_id > 3) { 
+        } else if (req.user.role_id === 2 || req.user.role_id > 3) {
             query = "SELECT * FROM documents WHERE status = 'Pending' AND (current_assignee_id = $1 OR current_assignee_id IS NULL) ORDER BY created_at ASC";
             values = [req.user.id];
         } else {
