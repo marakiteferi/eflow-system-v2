@@ -1,13 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import api from '../api';
 
 const DocumentDetailsModal = ({ document, onClose }) => {
   const [history, setHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [scale, setScale] = useState(1);
+  
+  const viewerRef = useRef(null);
+  const imageContainerRef = useRef(null);
 
-  // Fetch the history timeline when the modal opens
+  // 1. Safely calculate file data BEFORE the hooks using optional chaining (?)
+  const cleanPath = document?.file_path?.replace(/\\/g, '/') || '';
+  const finalPath = cleanPath.startsWith('/') ? cleanPath.substring(1) : cleanPath;
+  const fileUrl = finalPath ? `http://localhost:5000/${finalPath}?v=${Date.now()}` : '';
+  const isPdf = finalPath.toLowerCase().endsWith('.pdf');
+  const isImage = finalPath.match(/\.(jpg|jpeg|png)$/i);
+
+  // HOOK 1: Fetch History
   useEffect(() => {
     const fetchHistory = async () => {
+      if (!document) return; // Safe guard inside the hook
       try {
         const response = await api.get(`/documents/${document.id}/history`);
         setHistory(response.data);
@@ -17,18 +29,68 @@ const DocumentDetailsModal = ({ document, onClose }) => {
         setIsLoading(false);
       }
     };
-    if (document) fetchHistory();
+    fetchHistory();
   }, [document]);
 
+  // HOOK 2: Lock dashboard background scroll
+  useEffect(() => {
+    window.document.body.style.overflow = 'hidden';
+    return () => {
+      window.document.body.style.overflow = 'unset';
+    };
+  }, []);
+
+  // HOOK 3: Native Event Listener for the perfect zoom
+  useEffect(() => {
+    const container = imageContainerRef.current;
+    if (!container || !isImage) return;
+
+    const handleNativeWheel = (e) => {
+      e.preventDefault(); 
+      if (e.deltaY < 0) {
+        setScale(prev => Math.min(prev + 0.15, 5));
+      } else {
+        setScale(prev => Math.max(prev - 0.15, 0.5));
+      }
+    };
+
+    container.addEventListener('wheel', handleNativeWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleNativeWheel);
+  }, [isImage]);
+
+  // ==========================================
+  // All hooks have safely run! NOW we can do our early return.
+  // ==========================================
   if (!document) return null;
 
-  // Format the file path to create a valid URL
-  let cleanPath = document.file_path.replace(/\\/g, '/');
-  if (cleanPath.startsWith('/')) cleanPath = cleanPath.substring(1);
-  const fileUrl = `http://localhost:5000/${cleanPath}`;
+  const handleDownload = async (e) => {
+    e.preventDefault();
+    try {
+      const response = await fetch(fileUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = url;
+      link.download = `Stamped_${document.title.replace(/\s+/g, '_')}${isImage ? '.jpg' : '.pdf'}`;
+      window.document.body.appendChild(link);
+      link.click();
+      window.document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Download failed:", error);
+      alert("Failed to download file. Ensure your server is running.");
+    }
+  };
 
-  // NEW: Check if the file is a PDF
-  const isPdf = cleanPath.toLowerCase().endsWith('.pdf');
+  const toggleFullScreen = () => {
+    if (!window.document.fullscreenElement) {
+      viewerRef.current.requestFullscreen().catch(err => {
+        alert(`Error attempting to enable fullscreen: ${err.message}`);
+      });
+    } else {
+      window.document.exitFullscreen();
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-[60]">
@@ -36,31 +98,71 @@ const DocumentDetailsModal = ({ document, onClose }) => {
         
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-          <div>
+          <div className="flex flex-col">
             <h2 className="text-xl font-bold text-gray-800">{document.title}</h2>
-            <p className="text-sm text-gray-500">Submitted on: {new Date(document.created_at).toLocaleString()}</p>
+            <div className="flex items-center gap-3 mt-1">
+              <p className="text-sm text-gray-500">Submitted on: {new Date(document.created_at).toLocaleString()}</p>
+            </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 font-bold text-3xl leading-none">&times;</button>
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={handleDownload}
+              className="bg-indigo-600 text-white px-4 py-2 rounded text-sm font-bold shadow hover:bg-indigo-700 transition-colors flex items-center gap-2"
+            >
+              📥 Download
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-red-600 font-bold text-3xl leading-none transition-colors">&times;</button>
+          </div>
         </div>
 
         {/* Content Area - Split Screen */}
         <div className="flex flex-col md:flex-row flex-grow overflow-hidden">
           
-          {/* Left Side: Document Viewer (Smartly handles PDF vs Image) */}
-          <div className="md:w-1/2 p-6 border-r border-gray-200 bg-gray-100 overflow-y-auto flex justify-center items-start h-full">
+          {/* Left Side: Document Viewer */}
+          <div 
+            ref={viewerRef}
+            className="md:w-1/2 p-6 border-r border-gray-200 bg-white overflow-hidden flex flex-col items-center justify-center relative group"
+          >
+            {/* Fullscreen Button */}
+            <button 
+              onClick={toggleFullScreen}
+              className="absolute top-4 right-4 bg-gray-800 bg-opacity-70 text-white p-2 rounded hover:bg-opacity-100 transition-opacity z-10 flex items-center gap-2 text-xs font-bold shadow-lg"
+            >
+              ⛶ Fullscreen
+            </button>
+
             {isPdf ? (
               <iframe 
                 src={`${fileUrl}#toolbar=0`} 
                 title="PDF Viewer"
                 className="w-full h-full min-h-[500px] border border-gray-300 shadow-md rounded bg-white"
               />
+            ) : isImage ? (
+              <div 
+                ref={imageContainerRef}
+                className="w-full h-full overflow-hidden flex items-center justify-center bg-gray-100 border border-gray-300 shadow-inner rounded cursor-crosshair relative"
+              >
+                {/* Reset Zoom Indicator */}
+                {scale !== 1 && (
+                  <button 
+                    onClick={() => setScale(1)} 
+                    className="absolute bottom-4 right-4 bg-white px-3 py-1 rounded shadow text-xs font-bold text-gray-600 hover:text-indigo-600 z-10"
+                  >
+                    Reset Zoom ({(scale * 100).toFixed(0)}%)
+                  </button>
+                )}
+                <img 
+                  src={fileUrl} 
+                  alt="Uploaded Document" 
+                  style={{ transform: `scale(${scale})`, transition: 'transform 0.1s ease-out', transformOrigin: 'center' }}
+                  className="max-w-none shadow-md bg-white pointer-events-none"
+                  onError={(e) => { e.target.onerror = null; e.target.src = 'https://via.placeholder.com/400x600?text=File+Not+Found'; }}
+                />
+              </div>
             ) : (
-              <img 
-                src={fileUrl} 
-                alt="Uploaded Document" 
-                className="max-w-full h-auto shadow-md border border-gray-300"
-                onError={(e) => { e.target.onerror = null; e.target.src = 'https://via.placeholder.com/400x600?text=File+Not+Found'; }}
-              />
+              <div className="flex items-center justify-center h-full w-full text-gray-500">
+                Unsupported file format. Please download to view.
+              </div>
             )}
           </div>
 

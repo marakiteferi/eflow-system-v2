@@ -17,13 +17,11 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Helper function to extract text based on file type
 const extractText = async (filePath, mimetype) => {
     try {
         if (mimetype === 'application/pdf') {
             const dataBuffer = fs.readFileSync(filePath);
             const pdfData = await pdfParse(dataBuffer); 
-            
             if (!pdfData || !pdfData.text || pdfData.text.trim() === '') {
                 return '[System Note: No digital text found. If this is a scanned PDF, please upload it as an Image (PNG/JPG) so the OCR system can read it.]';
             }
@@ -38,7 +36,32 @@ const extractText = async (filePath, mimetype) => {
     }
 };
 
-// 1. POST: Upload document (Includes metadata_tag support)
+// ====================================================
+// NEW: The Smart Delegation Resolver
+// Automatically reroutes documents if the assignee is OOO
+// ====================================================
+const resolveAssignee = async (dbPool, initialId) => {
+    if (!initialId) return null;
+    let currentId = initialId;
+    let visited = new Set(); // Prevents infinite loops if User A delegates to B, and B delegates to A!
+    
+    while (currentId && !visited.has(currentId)) {
+        visited.add(currentId);
+        const res = await dbPool.query('SELECT is_out_of_office, delegate_id FROM users WHERE id = $1', [currentId]);
+        if (res.rows.length === 0) break;
+        
+        const { is_out_of_office, delegate_id } = res.rows[0];
+        if (is_out_of_office && delegate_id) {
+            console.log(`\n🔄 DELEGATION TRIGGERED: User ${currentId} is OOO. Forwarding to Delegate ${delegate_id}`);
+            currentId = delegate_id;
+        } else {
+            break; // User is active, or no delegate assigned. Stop searching.
+        }
+    }
+    return currentId;
+};
+
+// 1. POST: Upload document
 router.post('/upload', authenticateToken, upload.single('document'), async (req, res) => {
     try {
         const { title, workflow_id, metadata_tag } = req.body;
@@ -59,7 +82,10 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
                 const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
                 if (startNode) {
                     initialNodeId = startNode.id;
-                    initialAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null; 
+                    let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null; 
+                    
+                    // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
+                    initialAssigneeId = await resolveAssignee(pool, rawAssigneeId); 
                 }
             }
         }
@@ -101,7 +127,10 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
                 const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
                 if (startNode) {
                     initialNodeId = startNode.id;
-                    initialAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
+                    let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
+                    
+                    // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
+                    initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
                 }
             }
         }
@@ -121,7 +150,7 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
     }
 });
 
-// 3. GET: Fetch the approval history/timeline
+// 3. GET: Fetch history timeline
 router.get('/:id/history', authenticateToken, async (req, res) => {
     try {
         const query = `
@@ -144,7 +173,7 @@ router.get('/', authenticateToken, async (req, res) => {
         if (req.user.role_id === 1) {
             query = "SELECT d.*, (SELECT comments FROM approvals a WHERE a.document_id = d.id ORDER BY id DESC LIMIT 1) as latest_comment FROM documents d WHERE d.submitter_id = $1 ORDER BY d.created_at DESC";
             values = [req.user.id];
-        } else if (req.user.role_id === 2 || req.user.role_id > 3) { // Include custom reviewers!
+        } else if (req.user.role_id === 2 || req.user.role_id > 3) { 
             query = "SELECT * FROM documents WHERE status = 'Pending' AND (current_assignee_id = $1 OR current_assignee_id IS NULL) ORDER BY created_at ASC";
             values = [req.user.id];
         } else {

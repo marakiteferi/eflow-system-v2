@@ -5,6 +5,11 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const authenticateToken = require('../middleware/authMiddleware');
 
+// The Stamping Libraries
+const { PDFDocument, rgb, degrees } = require('pdf-lib');
+const sharp = require('sharp');
+const fs = require('fs');
+
 const pool = new Pool({
     user: process.env.DB_USER, host: process.env.DB_HOST, database: process.env.DB_NAME, password: process.env.DB_PASSWORD, port: process.env.DB_PORT,
 });
@@ -17,16 +22,13 @@ const transporter = nodemailer.createTransport({
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
 });
 
-// NEW: Universal Email Helper Function
+// Universal Email Helper
 const sendNotificationEmail = async (userId, subject, message) => {
     try {
         const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [userId]);
         if (userQuery.rows.length > 0) {
             const { email, name } = userQuery.rows[0];
-            
-            // Print to terminal for easy testing
             console.log(`\n📧 SENDING EMAIL TO: ${email} | SUBJECT: ${subject}`);
-            
             await transporter.sendMail({
                 from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
                 to: email,
@@ -44,6 +46,62 @@ const sendNotificationEmail = async (userId, subject, message) => {
         }
     } catch (err) {
         console.error('Failed to send notification email:', err.message);
+    }
+};
+
+// NEW: Universal PDF & Image Stamping Engine
+// NEW: Universal PDF & Image Stamping Engine (Windows-Safe)
+const stampApprovedDocument = async (filePath, approverName) => {
+    try {
+        if (!filePath) return false;
+        
+        console.log(`\n🖨️ STAMPING DOCUMENT: ${filePath}`);
+        const lowerPath = filePath.toLowerCase();
+        const dateStr = new Date().toISOString().split('T')[0];
+        const stampText = `OFFICIALLY APPROVED - ${approverName} - ${dateStr}`;
+
+        if (lowerPath.endsWith('.pdf')) {
+            const existingPdfBytes = fs.readFileSync(filePath);
+            const pdfDoc = await PDFDocument.load(existingPdfBytes);
+            const pages = pdfDoc.getPages();
+            
+            for (const page of pages) {
+                const { width, height } = page.getSize();
+                page.drawText(stampText, {
+                    x: 50, y: height / 2, size: 24, color: rgb(0, 0.5, 0), opacity: 0.4, rotate: degrees(45),
+                });
+            }
+            fs.writeFileSync(filePath, await pdfDoc.save());
+            console.log('✅ PDF Stamping Complete!');
+            return true;
+
+        } else if (lowerPath.match(/\.(jpg|jpeg|png)$/)) {
+            // FIX: Read the image into memory FIRST to prevent Windows file-lock errors
+            const imageBuffer = fs.readFileSync(filePath);
+            const metadata = await sharp(imageBuffer).metadata();
+            const width = metadata.width || 800;
+            const height = metadata.height || 800;
+            
+            const svgWatermark = `
+            <svg width="${width}" height="${height}">
+              <style>
+              .title { fill: rgba(0, 128, 0, 0.5); font-size: ${Math.max(width/20, 24)}px; font-weight: bold; font-family: sans-serif; }
+              </style>
+              <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="title" transform="rotate(-45, ${width/2}, ${height/2})">${stampText}</text>
+            </svg>`;
+            
+            // Apply the overlay to the memory buffer, then overwrite the physical file
+            const stampedBuffer = await sharp(imageBuffer)
+                .composite([{ input: Buffer.from(svgWatermark), top: 0, left: 0 }])
+                .toBuffer();
+                
+            fs.writeFileSync(filePath, stampedBuffer);
+            console.log('✅ Image Stamping Complete!');
+            return true;
+        }
+    } catch (err) {
+        console.error('Failed to stamp document:', err);
+        return false;
     }
 };
 
@@ -67,8 +125,7 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
     }
 });
 
-// POST: Approve & Route Document
-// POST: Approve & Route Document (Advanced n8n-Style Engine)
+// POST: Approve & Route Document (Advanced Engine)
 router.post('/approve', authenticateToken, async (req, res) => {
     const { documentId, otp, comments } = req.body;
     const storedData = otpStore.get(req.user.id);
@@ -84,8 +141,8 @@ router.post('/approve', authenticateToken, async (req, res) => {
     try {
         await pool.query('BEGIN');
 
-        // Fetch doc details AND the metadata_tag to evaluate conditions
-        const docQuery = await pool.query('SELECT title, submitter_id, workflow_id, current_node_id, metadata_tag FROM documents WHERE id = $1', [documentId]);
+        // Fetch doc details including file_path for stamping!
+        const docQuery = await pool.query('SELECT title, submitter_id, workflow_id, current_node_id, metadata_tag, file_path FROM documents WHERE id = $1', [documentId]);
         const doc = docQuery.rows[0];
 
         let nextNodeId = null;
@@ -99,44 +156,32 @@ router.post('/approve', authenticateToken, async (req, res) => {
             const edges = flowData.edges || [];
             const nodes = flowData.nodes || [];
             
-            // AUTOMATED TRAVERSAL ENGINE
-            // Start looking for the next path from the node we just approved
             let currentId = doc.current_node_id;
 
             while (true) {
-                // 1. Get all edges leaving the current node
                 let outgoingEdges = edges.filter(e => e.source === currentId);
-                if (outgoingEdges.length === 0) break; // End of the line. Document is fully approved!
+                if (outgoingEdges.length === 0) break;
 
-                let edgeToFollow = outgoingEdges[0]; // Default for regular Task Nodes
+                let edgeToFollow = outgoingEdges[0]; 
 
-                // 2. Is the node we are AT a Condition Node?
                 const currentNodeObj = nodes.find(n => n.id === currentId);
-                
                 if (currentNodeObj && currentNodeObj.type === 'condition') {
-                    // Evaluate the Document Tag against the Node's rule
                     const docTag = (doc.metadata_tag || '').toLowerCase().trim();
                     const condValue = (currentNodeObj.data?.conditionValue || '').toLowerCase().trim();
                     
                     const isMatch = docTag === condValue;
                     const expectedHandle = isMatch ? 'true' : 'false';
 
-                    // Find the specific edge that matches TRUE or FALSE
                     edgeToFollow = outgoingEdges.find(e => e.sourceHandle === expectedHandle);
-                    
-                    if (!edgeToFollow) break; // If there is no line drawn for this outcome, workflow ends.
+                    if (!edgeToFollow) break; 
                 }
 
-                // 3. Find the Node that the chosen edge points to
                 let targetNode = nodes.find(n => n.id === edgeToFollow.target);
                 if (!targetNode) break;
 
-                // 4. Did we hit ANOTHER condition, or a real Task?
                 if (targetNode.type === 'condition') {
-                    // Loop again! Instantly evaluate this new condition node.
                     currentId = targetNode.id;
                 } else {
-                    // We found a Task Node! Assign it and exit the loop.
                     nextNodeId = targetNode.id;
                     nextAssigneeId = targetNode.data?.assignee ? parseInt(targetNode.data.assignee, 10) : null;
                     isFinalStep = false;
@@ -145,10 +190,14 @@ router.post('/approve', authenticateToken, async (req, res) => {
             }
         }
 
-        // --- Save the Route State ---
+        // Save Route State & Trigger Stamp
         if (isFinalStep) {
             await pool.query("UPDATE documents SET status = 'Approved', current_node_id = NULL, current_assignee_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1", [documentId]);
             await sendNotificationEmail(doc.submitter_id, 'Document Fully Approved!', `Great news! Your document <b>"${doc.title}"</b> has passed all review stages.`);
+            
+            // Apply the permanent watermark
+            const userQuery = await pool.query('SELECT name FROM users WHERE id = $1', [req.user.id]);
+            await stampApprovedDocument(doc.file_path, userQuery.rows[0].name);
         } else {
             await pool.query("UPDATE documents SET current_node_id = $1, current_assignee_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3", [nextNodeId, nextAssigneeId, documentId]);
             if (nextAssigneeId) {
@@ -182,7 +231,6 @@ router.post('/reject', authenticateToken, async (req, res) => {
         await pool.query('BEGIN');
         await pool.query("UPDATE documents SET status = 'Rejected', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [documentId]);
         
-        // Get the doc details so we can email the student
         const docQuery = await pool.query('SELECT title, submitter_id, current_node_id FROM documents WHERE id = $1', [documentId]);
         const doc = docQuery.rows[0];
 
@@ -191,7 +239,6 @@ router.post('/reject', authenticateToken, async (req, res) => {
         
         await pool.query('COMMIT');
 
-        // NOTIFY STUDENT: Rejected with reason
         await sendNotificationEmail(
             doc.submitter_id, 
             'Action Required: Document Rejected', 
