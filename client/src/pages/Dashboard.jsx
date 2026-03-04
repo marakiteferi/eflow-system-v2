@@ -41,11 +41,15 @@ const Dashboard = () => {
   const [currentChecklist, setCurrentChecklist] = useState([]);
   const [checkedItems, setCheckedItems] = useState([]);
 
+ // Derive permissions securely (Preventing ID overlap with custom roles)
   const isStudent = user?.role_id === 1;
   const isStaffOrReviewer = user?.role_id === 2 || user?.role_id > 3;
-  const canManageUsers = user?.role_id === 3 || user?.can_manage_users;
-  const canCreateWorkflows = user?.role_id === 3 || user?.can_create_workflows;
+  const isSuperAdmin = user?.role_id === 3;
+  const isCustomRole = user?.role_id > 3;
 
+  // Only grant dynamic powers if they are actually a custom role
+  const canManageUsers = isSuperAdmin || (isCustomRole && user?.can_manage_users);
+  const canCreateWorkflows = isSuperAdmin || (isCustomRole && user?.can_create_workflows);
   const fetchData = useCallback(async () => {
     try {
       if (isStudent || isStaffOrReviewer) {

@@ -36,6 +36,7 @@ app.use('/api/workflows', require('./routes/workflowRoutes'));
 app.use('/api/documents', require('./routes/documentRoutes'));
 app.use('/api/approvals', require('./routes/approvalRoutes')); // We will build this next!
 app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/users', require('./routes/userRoutes')); // For OOO and delegation
 // 5. Start Server
 app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
