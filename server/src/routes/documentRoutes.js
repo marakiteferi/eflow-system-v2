@@ -207,4 +207,45 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 });
 
+// 5. PATCH: Set metadata tag on a document (for staff to trigger condition nodes)
+router.patch('/:id/tag', authenticateToken, async (req, res) => {
+    const { tag } = req.body;
+    const documentId = req.params.id;
+
+    if (tag === undefined || tag === null) {
+        return res.status(400).json({ message: 'A tag value is required.' });
+    }
+
+    try {
+        // Only the current assignee or a Super Admin can set the tag
+        const docQuery = await pool.query('SELECT current_assignee_id FROM documents WHERE id = $1', [documentId]);
+        if (docQuery.rows.length === 0) {
+            return res.status(404).json({ message: 'Document not found.' });
+        }
+
+        const doc = docQuery.rows[0];
+        const isSuperAdmin = req.user.role_id === 3;
+        const isCurrentAssignee = doc.current_assignee_id === req.user.id;
+
+        if (!isSuperAdmin && !isCurrentAssignee) {
+            return res.status(403).json({ message: 'You are not authorized to tag this document.' });
+        }
+
+        await pool.query(
+            'UPDATE documents SET metadata_tag = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+            [tag.trim(), documentId]
+        );
+
+        await pool.query(
+            "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)",
+            [documentId, req.user.id, `Document tagged as: "${tag.trim()}"`]
+        );
+
+        res.status(200).json({ message: `Document tagged as "${tag.trim()}" successfully.` });
+    } catch (err) {
+        console.error('Error setting document tag:', err);
+        res.status(500).json({ message: 'Server error setting tag.' });
+    }
+});
+
 module.exports = router;

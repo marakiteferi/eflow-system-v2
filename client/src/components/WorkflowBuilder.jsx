@@ -84,16 +84,105 @@ const ParallelNode = ({ id, data, selected }) => (
 
 
 // ==========================================
+// 2b. EMAIL PROPERTIES SUB-COMPONENT
+// ==========================================
+const EMAIL_VARS = ['{{submitter_email}}', '{{submitter_name}}', '{{document_title}}'];
+
+const EmailProperties = ({ data, onChange }) => {
+  const recipientRef = useRef(null);
+  const subjectRef = useRef(null);
+  const bodyRef = useRef(null);
+  const [activeField, setActiveField] = useState(null);
+  const [activeRef, setActiveRef] = useState(null);
+
+  const insertVariable = (varText) => {
+    const field = activeField || 'body';
+    const ref = activeRef || bodyRef;
+    const el = ref.current;
+    if (!el) {
+      onChange(field, (data[field] || '') + varText);
+      return;
+    }
+    const start = el.selectionStart ?? (data[field] || '').length;
+    const end = el.selectionEnd ?? start;
+    const current = data[field] || '';
+    onChange(field, current.slice(0, start) + varText + current.slice(end));
+    requestAnimationFrame(() => {
+      if (el) {
+        el.selectionStart = start + varText.length;
+        el.selectionEnd = start + varText.length;
+        el.focus();
+      }
+    });
+  };
+
+  return (
+    <>
+      <div className="bg-green-50 border border-green-200 rounded p-2">
+        <p className="text-[10px] font-bold text-green-800 mb-1.5">⚡ Click to Insert Variable</p>
+        <div className="flex flex-wrap gap-1">
+          {EMAIL_VARS.map(v => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => insertVariable(v)}
+              className="text-[10px] bg-green-100 hover:bg-green-200 active:bg-green-300 text-green-800 border border-green-300 px-1.5 py-0.5 rounded font-mono cursor-pointer transition-colors"
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+        <p className="text-[9px] text-green-600 mt-1">Click a field first, then click a variable to insert it at your cursor.</p>
+      </div>
+      <div>
+        <label className="block text-xs font-bold text-gray-700 mb-1">Recipient Address</label>
+        <input
+          ref={recipientRef}
+          type="text" value={data.recipient || ''}
+          onChange={e => onChange('recipient', e.target.value)}
+          onFocus={() => { setActiveField('recipient'); setActiveRef(recipientRef); }}
+          className="w-full text-sm border rounded p-2"
+          placeholder="{{submitter_email}} or user@domain.com"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-bold text-gray-700 mb-1">Subject</label>
+        <input
+          ref={subjectRef}
+          type="text" value={data.subject || ''}
+          onChange={e => onChange('subject', e.target.value)}
+          onFocus={() => { setActiveField('subject'); setActiveRef(subjectRef); }}
+          className="w-full text-sm border rounded p-2"
+          placeholder="Update on document"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-bold text-gray-700 mb-1">Body Template</label>
+        <textarea
+          ref={bodyRef}
+          value={data.body || ''}
+          onChange={e => onChange('body', e.target.value)}
+          onFocus={() => { setActiveField('body'); setActiveRef(bodyRef); }}
+          className="w-full text-sm border rounded p-2 h-28"
+          placeholder="Dear {{submitter_name}}, your application for '{{document_title}}' has been reviewed..."
+        />
+      </div>
+    </>
+  );
+};
+
+// ==========================================
 // 2. RIGHT INSPECTOR PANEL
 // ==========================================
 const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [] }) => {
+  // Hooks MUST be called before any early returns (React rules of hooks)
+  const [newCheckItem, setNewCheckItem] = useState('');
+
   if (!selectedNode) return null;
 
   const data = selectedNode.data;
   const onChange = (field, value) => updateNodeData(selectedNode.id, field, value);
 
-  // Helper for checklist
-  const [newCheckItem, setNewCheckItem] = useState('');
   const addChecklistItem = () => {
     if (newCheckItem.trim()) {
       onChange('checklist', [...(data.checklist || []), newCheckItem.trim()]);
@@ -169,6 +258,18 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                 <button onClick={addChecklistItem} className="bg-blue-600 text-white px-2 rounded text-xs">+</button>
               </div>
             </div>
+
+            <div className="bg-indigo-50 p-3 rounded border border-indigo-200">
+              <label className="block text-[10px] uppercase tracking-wider font-bold text-indigo-800 mb-1">Allowed Tags</label>
+              <input
+                type="text"
+                value={data.allowedTags || ''}
+                onChange={(e) => onChange('allowedTags', e.target.value)}
+                className="w-full text-xs border-indigo-200 bg-white rounded p-1.5 focus:ring-indigo-400 border"
+                placeholder="e.g. accepted, rejected"
+              />
+              <p className="text-[10px] text-indigo-600 mt-1">Comma-separated. Staff will see these as a dropdown when tagging this document.</p>
+            </div>
           </>
         )}
 
@@ -186,20 +287,7 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
 
         {/* 3. EMAIL PROPERTIES */}
         {selectedNode.type === 'email' && (
-          <>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Recipient Address</label>
-              <input type="email" value={data.recipient || ''} onChange={e => onChange('recipient', e.target.value)} className="w-full text-sm border rounded p-2" placeholder="user@domain.com" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Subject</label>
-              <input type="text" value={data.subject || ''} onChange={e => onChange('subject', e.target.value)} className="w-full text-sm border rounded p-2" placeholder="Update on document" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Body Template</label>
-              <textarea value={data.body || ''} onChange={e => onChange('body', e.target.value)} className="w-full text-sm border rounded p-2 h-24" placeholder="Hello, this is to notify you..." />
-            </div>
-          </>
+          <EmailProperties data={data} onChange={onChange} />
         )}
 
         {/* 4. DELAY PROPERTIES */}
@@ -280,6 +368,7 @@ const WorkflowBuilderInner = () => {
   const [staffList, setStaffList] = useState([]);
 
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [panelForceClosed, setPanelForceClosed] = useState(false);
 
   const reactFlowWrapper = useRef(null);
   const { project } = useReactFlow();
@@ -332,7 +421,9 @@ const WorkflowBuilderInner = () => {
   // Selection
   const onSelectionChange = ({ nodes }) => {
     if (nodes.length > 0) {
+      // A new node was explicitly clicked — always show the panel
       setSelectedNodeId(nodes[0].id);
+      setPanelForceClosed(false);
     } else {
       setSelectedNodeId(null);
     }
@@ -516,11 +607,11 @@ const WorkflowBuilderInner = () => {
         </div>
 
         {/* Right Inspector Panel */}
-        {selectedNodeId && (
+        {selectedNodeId && !panelForceClosed && (
           <PropertyInspector
             selectedNode={selectedNode}
             updateNodeData={updateNodeData}
-            closePanel={() => setSelectedNodeId(null)}
+            closePanel={() => { setSelectedNodeId(null); setPanelForceClosed(true); }}
             staffList={staffList}
           />
         )}
