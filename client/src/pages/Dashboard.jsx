@@ -5,22 +5,23 @@ import WorkflowBuilder from '../components/WorkflowBuilder';
 import DocumentUpload from '../components/DocumentUpload';
 import DocumentDetailsModal from '../components/DocumentDetailsModal';
 import RoleManager from '../components/RoleManager';
+import StudentPortal from './StudentPortal';
 import api from '../api';
 
 const Dashboard = () => {
   const { user, logout } = useContext(AuthContext);
   const navigate = useNavigate();
-  
+
   const [documents, setDocuments] = useState([]);
   const [viewingDocument, setViewingDocument] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  
+
   const [auditLogs, setAuditLogs] = useState([]);
   const [usersList, setUsersList] = useState([]);
   const [adminView, setAdminView] = useState('overview');
   const [adminStats, setAdminStats] = useState(null);
   const [dynamicRoles, setDynamicRoles] = useState([]);
-  
+
   // NEW: Workflows state for the checklist logic
   const [workflows, setWorkflows] = useState([]);
 
@@ -28,7 +29,7 @@ const Dashboard = () => {
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [otpInput, setOtpInput] = useState('');
-  
+
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectComment, setRejectComment] = useState('');
   const [showResubmitModal, setShowResubmitModal] = useState(false);
@@ -41,7 +42,10 @@ const Dashboard = () => {
   const [currentChecklist, setCurrentChecklist] = useState([]);
   const [checkedItems, setCheckedItems] = useState([]);
 
- // Derive permissions securely (Preventing ID overlap with custom roles)
+  // NEW: Local tag state for the review queue (key = docId, value = tag string)
+  const [localTags, setLocalTags] = useState({});
+
+  // Derive permissions securely (Preventing ID overlap with custom roles)
   const isStudent = user?.role_id === 1;
   const isStaffOrReviewer = user?.role_id === 2 || user?.role_id > 3;
   const isSuperAdmin = user?.role_id === 3;
@@ -84,7 +88,7 @@ const Dashboard = () => {
 
   useEffect(() => {
     if (canManageUsers || canCreateWorkflows) {
-        setAdminView(prev => prev || 'overview');
+      setAdminView(prev => prev || 'overview');
     }
   }, [canManageUsers, canCreateWorkflows]);
 
@@ -98,7 +102,7 @@ const Dashboard = () => {
     try {
       await api.put(`/admin/users/${targetUserId}/role`, { role_id: parseInt(newRoleId) });
       alert('User role updated!');
-      fetchData(); 
+      fetchData();
     } catch (error) {
       console.error('Failed to update role', error);
     }
@@ -112,14 +116,14 @@ const Dashboard = () => {
     setSelectedDocId(docId);
 
     let checklist = [];
-    
+
     // Check if this document's current node has a mandatory checklist
     if (doc && doc.workflow_id && doc.current_node_id) {
       const wf = workflows.find(w => w.id === doc.workflow_id);
       if (wf) {
         const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
         const currentNode = (flowData.nodes || []).find(n => n.id === doc.current_node_id);
-        
+
         if (currentNode && currentNode.data?.checklist && currentNode.data.checklist.length > 0) {
           checklist = currentNode.data.checklist;
         }
@@ -153,7 +157,7 @@ const Dashboard = () => {
       await api.post('/approvals/approve', { documentId: selectedDocId, otp: otpInput, comments: 'Verified by Staff' });
       setShowOtpModal(false);
       setOtpInput('');
-      fetchData(); 
+      fetchData();
       alert('Approved successfully!');
     } catch (err) {
       alert(err.response?.data?.message || 'Invalid OTP');
@@ -198,7 +202,7 @@ const Dashboard = () => {
       alert('Document successfully resubmitted!');
       setShowResubmitModal(false);
       setResubmitFile(null);
-      fetchData(); 
+      fetchData();
     } catch (error) {
       alert('Failed to resubmit document.');
     } finally {
@@ -212,20 +216,43 @@ const Dashboard = () => {
     return titleMatch || textMatch;
   });
 
+  // Helper: get allowed tags array from the current workflow node for a given document
+  const getNodeAllowedTags = (doc) => {
+    if (!doc.workflow_id || !doc.current_node_id) return [];
+    const wf = workflows.find(w => w.id === doc.workflow_id);
+    if (!wf) return [];
+    const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
+    const currentNode = (flowData.nodes || []).find(n => n.id === doc.current_node_id);
+    if (!currentNode?.data?.allowedTags) return [];
+    return currentNode.data.allowedTags.split(',').map(t => t.trim()).filter(Boolean);
+  };
+
+  // Handler: set a tag on the document via the new backend endpoint  
+  const handleSetTag = async (docId, tag) => {
+    setLocalTags(prev => ({ ...prev, [docId]: tag }));
+    if (!tag) return;
+    try {
+      await api.patch(`/documents/${docId}/tag`, { tag });
+    } catch (err) {
+      console.error('Failed to set tag:', err);
+      alert(err.response?.data?.message || 'Failed to set tag.');
+    }
+  };
+
   const renderDashboardContent = () => {
     return (
       <div className="space-y-8">
-        
+
         {/* SECTION 1: Standard Document Upload & Submissions */}
         {(isStudent || isStaffOrReviewer) && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <DocumentUpload onUploadSuccess={fetchData} />
-            
+
             <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-3">
                 <h3 className="text-xl font-semibold">My Submissions</h3>
-                <input 
-                  type="text" placeholder="Search title or OCR text..." 
+                <input
+                  type="text" placeholder="Search title or OCR text..."
                   className="w-full sm:w-auto px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -267,21 +294,60 @@ const Dashboard = () => {
               <p className="text-gray-500">No pending documents to review.</p>
             ) : (
               <ul className="divide-y divide-gray-200">
-                {filteredDocs.filter(d => d.status === 'Pending').map((doc) => (
-                  <li key={doc.id} className="py-4 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
-                    <div>
-                      <p className="font-medium text-gray-900">{doc.title}</p>
-                      <p className="text-sm text-gray-500">Submitted on: {new Date(doc.created_at).toLocaleDateString()}</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button onClick={() => setViewingDocument(doc)} className="bg-blue-50 text-blue-600 px-3 py-1 rounded hover:bg-blue-100 font-medium text-sm">View Details</button>
-                      <button onClick={() => openRejectModal(doc.id)} className="bg-red-50 text-red-600 px-3 py-1 rounded hover:bg-red-100 font-medium text-sm">Reject</button>
-                      
-                      {/* THIS BUTTON NOW TRIGGERS THE CHECKLIST ENGINE */}
-                      <button onClick={() => handleRequestApproval(doc.id)} className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 font-medium text-sm">Approve</button>
-                    </div>
-                  </li>
-                ))}
+                {filteredDocs.filter(d => d.status === 'Pending').map((doc) => {
+                  const allowedTags = getNodeAllowedTags(doc);
+                  const currentTag = localTags[doc.id] ?? (doc.metadata_tag || '');
+                  return (
+                    <li key={doc.id} className="py-4 flex flex-col gap-3">
+                      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2">
+                        <div>
+                          <p className="font-medium text-gray-900">{doc.title}</p>
+                          <p className="text-sm text-gray-500">Submitted on: {new Date(doc.created_at).toLocaleDateString()}</p>
+                        </div>
+                        {/* Current tag badge */}
+                        {currentTag && (
+                          <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-indigo-100 text-indigo-700 self-start">
+                            🏷️ {currentTag}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Tag control — shown before the action buttons */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-bold text-gray-600">Set Tag:</span>
+                        {allowedTags.length > 0 ? (
+                          <select
+                            value={currentTag}
+                            onChange={(e) => handleSetTag(doc.id, e.target.value)}
+                            className="text-xs border border-gray-300 rounded px-2 py-1 bg-white focus:ring-indigo-500 focus:border-indigo-500"
+                          >
+                            <option value="">-- choose tag --</option>
+                            {allowedTags.map(tag => (
+                              <option key={tag} value={tag}>{tag}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={currentTag}
+                            onChange={(e) => setLocalTags(prev => ({ ...prev, [doc.id]: e.target.value }))}
+                            onBlur={(e) => handleSetTag(doc.id, e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSetTag(doc.id, e.target.value)}
+                            placeholder="Type a tag (e.g. accepted)"
+                            className="text-xs border border-gray-300 rounded px-2 py-1 focus:ring-indigo-500 focus:border-indigo-500 w-40"
+                          />
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={() => setViewingDocument(doc)} className="bg-blue-50 text-blue-600 px-3 py-1 rounded hover:bg-blue-100 font-medium text-sm">View Details</button>
+                        <button onClick={() => openRejectModal(doc.id)} className="bg-red-50 text-red-600 px-3 py-1 rounded hover:bg-red-100 font-medium text-sm">Reject</button>
+                        {/* THIS BUTTON NOW TRIGGERS THE CHECKLIST ENGINE */}
+                        <button onClick={() => handleRequestApproval(doc.id)} className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 font-medium text-sm">Approve</button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -322,7 +388,7 @@ const Dashboard = () => {
 
             {adminView === 'workflows' && canCreateWorkflows && <WorkflowBuilder />}
             {adminView === 'hierarchy' && canManageUsers && <RoleManager />}
-            
+
             {adminView === 'users' && canManageUsers && (
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                 <table className="min-w-full divide-y divide-gray-200">
@@ -339,7 +405,7 @@ const Dashboard = () => {
                         <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{listUser.name}</td>
                         <td className="px-6 py-4 whitespace-nowrap text-gray-500">{listUser.email}</td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <select 
+                          <select
                             className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 rounded-md"
                             value={listUser.role_id || ''}
                             onChange={(e) => handleRoleChange(listUser.id, e.target.value)}
@@ -366,12 +432,12 @@ const Dashboard = () => {
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col">
                 <div className="p-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
                   <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wider">System Audit Trail</h4>
-                  <button 
+                  <button
                     onClick={() => {
                       if (auditLogs.length === 0) return alert('No logs to export.');
                       let csvContent = "data:text/csv;charset=utf-8,Timestamp,Action,Document,User\n";
                       auditLogs.forEach(log => {
-                        const date = new Date(log.timestamp).toLocaleString().replace(/,/g, ''); 
+                        const date = new Date(log.timestamp).toLocaleString().replace(/,/g, '');
                         csvContent += `${date},"${log.action}","${log.document_title || 'System'}","${log.user_name || 'System'}"\n`;
                       });
                       const link = document.createElement("a");
@@ -414,6 +480,10 @@ const Dashboard = () => {
     );
   };
 
+  // ── Students get redirected to the new dedicated student portal ──────────
+  // Placed here, AFTER all hooks have executed, to satisfy React rules of hooks.
+  if (isStudent) return <StudentPortal />;
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <nav className="bg-white shadow-sm px-6 py-4 flex flex-wrap justify-between items-center gap-4 border-b border-gray-200">
@@ -424,7 +494,7 @@ const Dashboard = () => {
           <button onClick={handleLogout} className="text-sm text-red-600 hover:text-red-800 font-bold">Logout</button>
         </div>
       </nav>
-      
+
       <main className="flex-grow max-w-7xl w-full mx-auto py-8 px-4 sm:px-6 lg:px-8">
         {renderDashboardContent()}
 
@@ -434,12 +504,12 @@ const Dashboard = () => {
             <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-md border-t-4 border-amber-500">
               <h3 className="text-xl font-black text-gray-800 mb-2">Mandatory Tasks</h3>
               <p className="text-sm text-gray-600 mb-4">You must complete all checklist items to unlock approval.</p>
-              
+
               <div className="space-y-3 mb-6">
                 {currentChecklist.map((item, idx) => (
                   <label key={idx} className="flex items-start gap-3 p-3 bg-gray-50 border border-gray-200 rounded cursor-pointer hover:bg-gray-100 transition-colors">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       className="mt-1 w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
                       checked={checkedItems.includes(idx)}
                       onChange={(e) => {
@@ -454,8 +524,8 @@ const Dashboard = () => {
 
               <div className="flex justify-end gap-3">
                 <button onClick={() => setShowChecklistModal(false)} className="px-4 py-2 text-gray-600 font-bold hover:bg-gray-100 rounded">Cancel</button>
-                <button 
-                  onClick={() => proceedToOtp(selectedDocId)} 
+                <button
+                  onClick={() => proceedToOtp(selectedDocId)}
                   disabled={checkedItems.length !== currentChecklist.length}
                   className={`px-4 py-2 rounded font-bold text-white transition-colors ${checkedItems.length === currentChecklist.length ? 'bg-indigo-600 hover:bg-indigo-700 shadow-md' : 'bg-gray-300 cursor-not-allowed text-gray-500'}`}
                 >

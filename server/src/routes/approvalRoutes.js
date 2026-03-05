@@ -18,8 +18,20 @@ const otpStore = new Map();
 
 // Mailer Configuration
 const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST, port: process.env.SMTP_PORT, secure: process.env.SMTP_PORT == 465, 
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT),
+    secure: process.env.SMTP_PORT == 465,
+    requireTLS: true, // Enforce STARTTLS on port 587 (required by Brevo)
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+});
+
+// Verify SMTP connection on startup — surfaces auth/config errors immediately
+transporter.verify((error, success) => {
+    if (error) {
+        console.error('❌ SMTP CONNECTION FAILED:', error);
+    } else {
+        console.log('✅ SMTP Server ready — emails will be delivered');
+    }
 });
 
 // Universal Email Helper
@@ -29,7 +41,7 @@ const sendNotificationEmail = async (userId, subject, message) => {
         if (userQuery.rows.length > 0) {
             const { email, name } = userQuery.rows[0];
             console.log(`\n📧 SENDING EMAIL TO: ${email} | SUBJECT: ${subject}`);
-            await transporter.sendMail({
+            const info = await transporter.sendMail({
                 from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
                 to: email,
                 subject: subject,
@@ -43,18 +55,20 @@ const sendNotificationEmail = async (userId, subject, message) => {
                     </div>
                 `
             });
+            console.log(`✅ EMAIL SENT SUCCESSFULLY — MessageId: ${info.messageId}`);
         }
     } catch (err) {
-        console.error('Failed to send notification email:', err.message);
+        console.error(`❌ EMAIL SEND FAILED — Subject: "${subject}" | Error: ${err.message}`);
     }
 };
+
 
 // NEW: Universal PDF & Image Stamping Engine
 // NEW: Universal PDF & Image Stamping Engine (Windows-Safe)
 const stampApprovedDocument = async (filePath, approverName) => {
     try {
         if (!filePath) return false;
-        
+
         console.log(`\n🖨️ STAMPING DOCUMENT: ${filePath}`);
         const lowerPath = filePath.toLowerCase();
         const dateStr = new Date().toISOString().split('T')[0];
@@ -64,7 +78,7 @@ const stampApprovedDocument = async (filePath, approverName) => {
             const existingPdfBytes = fs.readFileSync(filePath);
             const pdfDoc = await PDFDocument.load(existingPdfBytes);
             const pages = pdfDoc.getPages();
-            
+
             for (const page of pages) {
                 const { width, height } = page.getSize();
                 page.drawText(stampText, {
@@ -81,20 +95,20 @@ const stampApprovedDocument = async (filePath, approverName) => {
             const metadata = await sharp(imageBuffer).metadata();
             const width = metadata.width || 800;
             const height = metadata.height || 800;
-            
+
             const svgWatermark = `
             <svg width="${width}" height="${height}">
               <style>
-              .title { fill: rgba(0, 128, 0, 0.5); font-size: ${Math.max(width/20, 24)}px; font-weight: bold; font-family: sans-serif; }
+              .title { fill: rgba(0, 128, 0, 0.5); font-size: ${Math.max(width / 20, 24)}px; font-weight: bold; font-family: sans-serif; }
               </style>
-              <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="title" transform="rotate(-45, ${width/2}, ${height/2})">${stampText}</text>
+              <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="title" transform="rotate(-45, ${width / 2}, ${height / 2})">${stampText}</text>
             </svg>`;
-            
+
             // Apply the overlay to the memory buffer, then overwrite the physical file
             const stampedBuffer = await sharp(imageBuffer)
                 .composite([{ input: Buffer.from(svgWatermark), top: 0, left: 0 }])
                 .toBuffer();
-                
+
             fs.writeFileSync(filePath, stampedBuffer);
             console.log('✅ Image Stamping Complete!');
             return true;
@@ -113,7 +127,7 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
         otpStore.set(req.user.id, { otp, documentId, expires: Date.now() + 5 * 60000 });
 
         const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [req.user.id]);
-        
+
         console.log(`\n======================================================`);
         console.log(`🔑 OTP FOR ${userQuery.rows[0].email}: ${otp}`);
         console.log(`======================================================\n`);
@@ -142,46 +156,179 @@ router.post('/approve', authenticateToken, async (req, res) => {
         await pool.query('BEGIN');
 
         // Fetch doc details including file_path for stamping!
-        const docQuery = await pool.query('SELECT title, submitter_id, workflow_id, current_node_id, metadata_tag, file_path FROM documents WHERE id = $1', [documentId]);
+        const docQuery = await pool.query(
+            'SELECT title, submitter_id, workflow_id, current_node_id, metadata_tag, file_path, parallel_branch_data FROM documents WHERE id = $1',
+            [documentId]
+        );
         const doc = docQuery.rows[0];
 
+        // Pre-fetch submitter info once — used by email nodes for template variables
+        let submitterInfo = null;
+        if (doc.submitter_id) {
+            const submitterQuery = await pool.query('SELECT name, email FROM users WHERE id = $1', [doc.submitter_id]);
+            if (submitterQuery.rows.length > 0) {
+                submitterInfo = submitterQuery.rows[0];
+            }
+        }
+
+        // Helper: resolve {{submitter_email}}, {{submitter_name}}, {{document_title}} in any string
+        const resolveTemplate = (text) => {
+            if (!text) return text;
+            return text
+                .replace(/\{\{submitter_email\}\}/gi, submitterInfo?.email || '')
+                .replace(/\{\{submitter_name\}\}/gi, submitterInfo?.name || '')
+                .replace(/\{\{document_title\}\}/gi, doc.title || '');
+        };
+
         let nextNodeId = null;
-        let nextAssigneeId = null; 
+        let nextAssigneeId = null;
         let isFinalStep = true;
+        let parallelBranches = null; // array of {nodeId, assigneeId, status} when in parallel mode
+
+        // ── PARALLEL BRANCH CHECK ──────────────────────────────────────────────
+        // If this document is currently inside a parallel gate (has branch data),
+        // mark the current approver's branch as done instead of advancing linearly.
+        const existingBranches = doc.parallel_branch_data;
+        if (existingBranches && Array.isArray(existingBranches)) {
+            // Find the branch this approver belongs to
+            const myBranchIdx = existingBranches.findIndex(
+                b => b.assigneeId === req.user.id && b.status === 'Pending'
+            );
+
+            if (myBranchIdx !== -1) {
+                existingBranches[myBranchIdx].status = 'Approved';
+                const allDone = existingBranches.every(b => b.status === 'Approved');
+
+                if (!allDone) {
+                    // Other branches still pending — just update the branch data and exit
+                    await pool.query(
+                        'UPDATE documents SET parallel_branch_data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+                        [JSON.stringify(existingBranches), documentId]
+                    );
+                    await pool.query(
+                        "INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Approved', $4)",
+                        [documentId, req.user.id, doc.current_node_id || 'parallel', comments || 'Verified by 2FA']
+                    );
+                    await pool.query(
+                        "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Parallel Branch Approved — Awaiting Other Reviewers')",
+                        [documentId, req.user.id]
+                    );
+                    await pool.query('COMMIT');
+                    otpStore.delete(req.user.id);
+                    return res.status(200).json({ message: 'Your branch approved — waiting for other reviewers to complete their branches.' });
+                }
+
+                // All branches done — clear parallel data and proceed past the parallel gate
+                await pool.query(
+                    'UPDATE documents SET parallel_branch_data = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+                    [documentId]
+                );
+                // Override current_node_id to the parallel node so the walker can advance past it
+                doc.current_node_id = existingBranches[0].parallelNodeId;
+                doc.parallel_branch_data = null;
+            }
+        }
+        // ── END PARALLEL BRANCH CHECK ──────────────────────────────────────────
 
         if (doc.workflow_id && doc.current_node_id) {
             const wfQuery = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [doc.workflow_id]);
-            const flowData = typeof wfQuery.rows[0].flow_structure === 'string' ? JSON.parse(wfQuery.rows[0].flow_structure) : wfQuery.rows[0].flow_structure;
-            
+            const flowData = typeof wfQuery.rows[0].flow_structure === 'string'
+                ? JSON.parse(wfQuery.rows[0].flow_structure)
+                : wfQuery.rows[0].flow_structure;
+
             const edges = flowData.edges || [];
             const nodes = flowData.nodes || [];
-            
+
             let currentId = doc.current_node_id;
 
             while (true) {
                 let outgoingEdges = edges.filter(e => e.source === currentId);
-                if (outgoingEdges.length === 0) break;
+                if (outgoingEdges.length === 0) break; // End of graph — fully approved
 
-                let edgeToFollow = outgoingEdges[0]; 
+                let edgeToFollow = outgoingEdges[0];
 
                 const currentNodeObj = nodes.find(n => n.id === currentId);
+
+                // Handle condition node: pick TRUE or FALSE branch based on metadata_tag
                 if (currentNodeObj && currentNodeObj.type === 'condition') {
                     const docTag = (doc.metadata_tag || '').toLowerCase().trim();
                     const condValue = (currentNodeObj.data?.conditionValue || '').toLowerCase().trim();
-                    
                     const isMatch = docTag === condValue;
                     const expectedHandle = isMatch ? 'true' : 'false';
-
                     edgeToFollow = outgoingEdges.find(e => e.sourceHandle === expectedHandle);
-                    if (!edgeToFollow) break; 
+                    if (!edgeToFollow) break;
                 }
 
                 let targetNode = nodes.find(n => n.id === edgeToFollow.target);
                 if (!targetNode) break;
 
                 if (targetNode.type === 'condition') {
+                    // Condition nodes are transparent — continue looping from here
                     currentId = targetNode.id;
+
+                } else if (targetNode.type === 'email') {
+                    // ✅ EMAIL NODE: Execute inline — send an actual email, then continue walking
+                    const recipientRaw = targetNode.data?.recipient || '';
+                    const resolvedRecipient = resolveTemplate(recipientRaw);
+                    const resolvedSubject = resolveTemplate(targetNode.data?.subject || 'E-flow Notification');
+                    const resolvedBody = resolveTemplate(targetNode.data?.body || '');
+
+                    console.log(`\n📧 WORKFLOW EMAIL NODE — Sending to: ${resolvedRecipient} | Subject: ${resolvedSubject}`);
+
+                    try {
+                        if (resolvedRecipient) {
+                            const info = await transporter.sendMail({
+                                from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
+                                to: resolvedRecipient,
+                                subject: resolvedSubject,
+                                html: `
+                                    <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eaeaea; border-radius: 8px; max-width: 500px;">
+                                        <h2 style="color: #4f46e5;">E-flow Notification</h2>
+                                        <p style="font-size: 16px; color: #374151; white-space: pre-line;">${resolvedBody}</p>
+                                        <hr style="border: none; border-top: 1px solid #eaeaea; margin: 20px 0;" />
+                                        <p style="font-size: 12px; color: #9ca3af;">This is an automated message from the E-flow document system.</p>
+                                    </div>
+                                `
+                            });
+                            console.log(`✅ WORKFLOW EMAIL SENT — MessageId: ${info.messageId}`);
+                        } else {
+                            console.warn('⚠️ Workflow email node skipped — recipient address is empty');
+                        }
+                    } catch (emailErr) {
+                        console.error('❌ Workflow email node send FAILED:', emailErr);
+                        // Don't abort the whole workflow for an email failure — just log it
+                    }
+
+                    // Continue walking from this email node to find the next real step
+                    currentId = targetNode.id;
+
+                } else if (targetNode.type === 'delay') {
+                    // Delay nodes: for now, treat as transparent (no actual scheduling yet)
+                    currentId = targetNode.id;
+
+                } else if (targetNode.type === 'parallel') {
+                    // ✅ PARALLEL NODE: Fan out to ALL connected task nodes simultaneously
+                    const parallelOutgoing = edges.filter(e => e.source === targetNode.id);
+                    const branches = [];
+                    for (const pe of parallelOutgoing) {
+                        const branchNode = nodes.find(n => n.id === pe.target);
+                        if (branchNode && branchNode.type === 'task') {
+                            branches.push({
+                                parallelNodeId: targetNode.id,
+                                nodeId: branchNode.id,
+                                assigneeId: branchNode.data?.assignee ? parseInt(branchNode.data.assignee, 10) : null,
+                                status: 'Pending'
+                            });
+                        }
+                    }
+                    if (branches.length > 0) {
+                        parallelBranches = branches;
+                        isFinalStep = false;
+                    }
+                    break;
+
                 } else {
+                    // It's a task (approval) node — this is the next human step
                     nextNodeId = targetNode.id;
                     nextAssigneeId = targetNode.data?.assignee ? parseInt(targetNode.data.assignee, 10) : null;
                     isFinalStep = false;
@@ -191,30 +338,76 @@ router.post('/approve', authenticateToken, async (req, res) => {
         }
 
         // Save Route State & Trigger Stamp
-        if (isFinalStep) {
-            await pool.query("UPDATE documents SET status = 'Approved', current_node_id = NULL, current_assignee_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1", [documentId]);
-            await sendNotificationEmail(doc.submitter_id, 'Document Fully Approved!', `Great news! Your document <b>"${doc.title}"</b> has passed all review stages.`);
-            
+        if (parallelBranches) {
+            // Fan out: set document to point at the parallel node, store all branch data
+            const parallelNodeId = parallelBranches[0].parallelNodeId;
+            await pool.query(
+                'UPDATE documents SET current_node_id = $1, current_assignee_id = NULL, parallel_branch_data = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+                [parallelNodeId, JSON.stringify(parallelBranches), documentId]
+            );
+            // Notify all parallel assignees at once
+            for (const branch of parallelBranches) {
+                if (branch.assigneeId) {
+                    await sendNotificationEmail(
+                        branch.assigneeId,
+                        'Parallel Review Required',
+                        `A document <b>"${doc.title}"</b> requires your parallel review. All assigned reviewers must approve before the workflow continues.`
+                    );
+                }
+            }
+            console.log(`⑂ PARALLEL SPLIT — Fanned out to ${parallelBranches.length} branches`);
+
+        } else if (isFinalStep) {
+            await pool.query(
+                "UPDATE documents SET status = 'Approved', current_node_id = NULL, current_assignee_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+                [documentId]
+            );
+            await sendNotificationEmail(
+                doc.submitter_id,
+                'Document Fully Approved!',
+                `Great news! Your document <b>"${doc.title}"</b> has passed all review stages.`
+            );
+
             // Apply the permanent watermark
             const userQuery = await pool.query('SELECT name FROM users WHERE id = $1', [req.user.id]);
             await stampApprovedDocument(doc.file_path, userQuery.rows[0].name);
         } else {
-            await pool.query("UPDATE documents SET current_node_id = $1, current_assignee_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3", [nextNodeId, nextAssigneeId, documentId]);
+            await pool.query(
+                "UPDATE documents SET current_node_id = $1, current_assignee_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
+                [nextNodeId, nextAssigneeId, documentId]
+            );
             if (nextAssigneeId) {
-                await sendNotificationEmail(nextAssigneeId, 'New Document Ready for Review', `A new document <b>"${doc.title}"</b> has been routed to your queue.`);
+                await sendNotificationEmail(
+                    nextAssigneeId,
+                    'New Document Ready for Review',
+                    `A new document <b>"${doc.title}"</b> has been routed to your queue.`
+                );
             }
         }
 
         const nodeLogLabel = doc.current_node_id || 'System';
-        await pool.query("INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Approved', $4)", [documentId, req.user.id, nodeLogLabel, comments || 'Verified by 2FA']);
+        await pool.query(
+            "INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Approved', $4)",
+            [documentId, req.user.id, nodeLogLabel, comments || 'Verified by 2FA']
+        );
 
-        const auditMessage = isFinalStep ? 'Document fully Approved via 2FA' : `Document Approved - Routed automatically to next step`;
-        await pool.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)", [documentId, req.user.id, auditMessage]);
+        const auditMessage = isFinalStep
+            ? 'Document fully Approved via 2FA'
+            : `Document Approved - Routed automatically to next step`;
+        await pool.query(
+            "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)",
+            [documentId, req.user.id, auditMessage]
+        );
 
         await pool.query('COMMIT');
         otpStore.delete(req.user.id);
-        
-        res.status(200).json({ message: isFinalStep ? 'Document securely approved' : 'Document dynamically routed to next reviewer' });
+
+        res.status(200).json({
+            message: isFinalStep
+                ? 'Document securely approved'
+                : 'Document dynamically routed to next reviewer'
+        });
+
     } catch (err) {
         await pool.query('ROLLBACK');
         console.error(err);
@@ -226,22 +419,22 @@ router.post('/approve', authenticateToken, async (req, res) => {
 router.post('/reject', authenticateToken, async (req, res) => {
     const { documentId, comments } = req.body;
     if (!comments || comments.trim() === '') return res.status(400).json({ message: 'A rejection reason is required' });
-    
+
     try {
         await pool.query('BEGIN');
         await pool.query("UPDATE documents SET status = 'Rejected', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [documentId]);
-        
+
         const docQuery = await pool.query('SELECT title, submitter_id, current_node_id FROM documents WHERE id = $1', [documentId]);
         const doc = docQuery.rows[0];
 
         await pool.query("INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Rejected', $4)", [documentId, req.user.id, doc.current_node_id || 'System', comments]);
         await pool.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Document Rejected - Revision Required')", [documentId, req.user.id]);
-        
+
         await pool.query('COMMIT');
 
         await sendNotificationEmail(
-            doc.submitter_id, 
-            'Action Required: Document Rejected', 
+            doc.submitter_id,
+            'Action Required: Document Rejected',
             `Your document <b>"${doc.title}"</b> requires your attention.<br><br><b>Feedback:</b> ${comments}<br><br>Please use the "Fix & Resubmit" button on your dashboard to upload a corrected version.`
         );
 
