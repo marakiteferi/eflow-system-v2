@@ -193,7 +193,14 @@ router.get('/', authenticateToken, async (req, res) => {
             query = "SELECT d.*, (SELECT comments FROM approvals a WHERE a.document_id = d.id ORDER BY id DESC LIMIT 1) as latest_comment FROM documents d WHERE d.submitter_id = $1 ORDER BY d.created_at DESC";
             values = [req.user.id];
         } else if (req.user.role_id === 2 || req.user.role_id > 3) {
-            query = "SELECT * FROM documents WHERE status = 'Pending' AND (current_assignee_id = $1 OR current_assignee_id IS NULL) ORDER BY created_at ASC";
+            query = `
+                SELECT DISTINCT d.* 
+                FROM documents d 
+                LEFT JOIN approvals a ON a.document_id = d.id AND a.approver_id = $1
+                WHERE (d.status = 'Pending' AND (d.current_assignee_id = $1 OR d.current_assignee_id IS NULL))
+                   OR a.approver_id = $1
+                ORDER BY d.created_at DESC
+            `;
             values = [req.user.id];
         } else {
             query = "SELECT * FROM documents ORDER BY created_at DESC";

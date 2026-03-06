@@ -667,7 +667,7 @@ const Dashboard = () => {
                                 <option value={2}>Staff (Legacy)</option>
                                 <option value={3}>Super Admin</option>
                                 <optgroup label="Custom Roles">
-                                  {dynamicRoles.map(role => (
+                                  {dynamicRoles.filter(r => r.is_active).map(role => (
                                     <option key={role.id} value={role.id}>{role.name}</option>
                                   ))}
                                 </optgroup>

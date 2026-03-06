@@ -234,8 +234,8 @@ const StudentPortal = () => {
                         key={key}
                         onClick={() => setActiveView(key)}
                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeView === key
-                                ? 'bg-blue-50 text-blue-600'
-                                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                            ? 'bg-blue-50 text-blue-600'
+                            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                             }`}
                     >
                         <span className={activeView === key ? 'text-blue-600' : 'text-gray-400'}><Icon /></span>
@@ -367,46 +367,55 @@ const StudentPortal = () => {
     );
 
     // ── SERVICES VIEW ─────────────────────────────────────────────────────────
-    const ServicesView = () => (
-        <div>
-            <div className="mb-8">
-                <h1 className="text-2xl font-bold text-gray-900">Select a Service</h1>
-                <p className="text-gray-500 mt-1">Choose the type of request you would like to initiate.</p>
-            </div>
-            {workflows.length === 0 ? (
-                <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
-                    <p className="text-lg font-semibold mb-2">No services available</p>
-                    <p className="text-sm">Please check back later or contact your administrator.</p>
+    const ServicesView = () => {
+        const studentWorkflows = workflows.filter(wf => {
+            const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
+            const allowed = flowData.metadata?.allowedSubmitters || [];
+            if (allowed.length === 0) return true; // Global service
+            return allowed.includes(user.role_id);
+        });
+
+        return (
+            <div>
+                <div className="mb-8">
+                    <h1 className="text-2xl font-bold text-gray-900">Select a Service</h1>
+                    <p className="text-gray-500 mt-1">Choose the type of request you would like to initiate.</p>
                 </div>
-            ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {workflows.map((wf, idx) => {
-                        const { bg, icon, emoji } = SERVICE_COLORS[idx % SERVICE_COLORS.length];
-                        return (
-                            <button
-                                key={wf.id}
-                                onClick={() => setUploadWf(wf)}
-                                className="bg-white rounded-xl border border-gray-200 p-6 text-left hover:shadow-md hover:border-blue-200 transition-all group"
-                            >
-                                <div className="flex items-start justify-between mb-4">
-                                    <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center text-xl`}>
-                                        {emoji}
+                {studentWorkflows.length === 0 ? (
+                    <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
+                        <p className="text-lg font-semibold mb-2">No services available</p>
+                        <p className="text-sm">Please check back later or contact your administrator.</p>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {studentWorkflows.map((wf, idx) => {
+                            const { bg, icon, emoji } = SERVICE_COLORS[idx % SERVICE_COLORS.length];
+                            return (
+                                <button
+                                    key={wf.id}
+                                    onClick={() => setUploadWf(wf)}
+                                    className="bg-white rounded-xl border border-gray-200 p-6 text-left hover:shadow-md hover:border-blue-200 transition-all group"
+                                >
+                                    <div className="flex items-start justify-between mb-4">
+                                        <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center text-xl`}>
+                                            {emoji}
+                                        </div>
+                                        <span className={`${icon} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                                            <IcoArrow />
+                                        </span>
                                     </div>
-                                    <span className={`${icon} opacity-0 group-hover:opacity-100 transition-opacity`}>
-                                        <IcoArrow />
-                                    </span>
-                                </div>
-                                <h3 className="font-bold text-gray-900 text-base mb-1.5">{wf.name}</h3>
-                                <p className="text-sm text-gray-500 leading-relaxed">
-                                    {wf.description || 'Submit a request through this workflow for review and approval.'}
-                                </p>
-                            </button>
-                        );
-                    })}
-                </div>
-            )}
-        </div>
-    );
+                                    <h3 className="font-bold text-gray-900 text-base mb-1.5">{wf.name}</h3>
+                                    <p className="text-sm text-gray-500 leading-relaxed">
+                                        {wf.description || 'Submit a request through this workflow for review and approval.'}
+                                    </p>
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        );
+    };
 
     // ── MY DOCUMENTS VIEW ─────────────────────────────────────────────────────
     const MyDocsView = () => {
@@ -439,8 +448,8 @@ const StudentPortal = () => {
                                     key={f.key}
                                     onClick={() => setStatusFilter(f.key)}
                                     className={`px-4 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${statusFilter === f.key
-                                            ? 'bg-blue-600 text-white border-blue-600'
-                                            : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+                                        ? 'bg-blue-600 text-white border-blue-600'
+                                        : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
                                         }`}
                                 >
                                     {f.label}
