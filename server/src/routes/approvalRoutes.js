@@ -182,6 +182,8 @@ router.post('/approve', authenticateToken, async (req, res) => {
 
         let nextNodeId = null;
         let nextAssigneeId = null;
+        let nextRoleId = null;
+        let nextDepartmentId = null;
         let isFinalStep = true;
         let parallelBranches = null; // array of {nodeId, assigneeId, status} when in parallel mode
 
@@ -190,10 +192,17 @@ router.post('/approve', authenticateToken, async (req, res) => {
         // mark the current approver's branch as done instead of advancing linearly.
         const existingBranches = doc.parallel_branch_data;
         if (existingBranches && Array.isArray(existingBranches)) {
-            // Find the branch this approver belongs to
-            const myBranchIdx = existingBranches.findIndex(
-                b => b.assigneeId === req.user.id && b.status === 'Pending'
-            );
+            // Find the branch this approver belongs to (by exact match OR role/dept match)
+            const myBranchIdx = existingBranches.findIndex(b => {
+                if (b.status !== 'Pending') return false;
+                if (b.assigneeId === req.user.id) return true; // Direct assignment match
+                // Role-based match
+                if (b.roleId === req.user.role_id) {
+                    if (!b.departmentId) return true; // ANY routing
+                    if (b.departmentId === req.user.department_id) return true; // SPECIFIC or INITIATOR match
+                }
+                return false;
+            });
 
             if (myBranchIdx !== -1) {
                 existingBranches[myBranchIdx].status = 'Approved';
@@ -313,10 +322,28 @@ router.post('/approve', authenticateToken, async (req, res) => {
                     for (const pe of parallelOutgoing) {
                         const branchNode = nodes.find(n => n.id === pe.target);
                         if (branchNode && branchNode.type === 'task') {
+                            let bAssigneeId = null;
+                            let bRoleId = null;
+                            let bDepartmentId = null;
+
+                            if (branchNode.data?.assignmentStrategy === 'role_based') {
+                                bRoleId = branchNode.data.roleId ? parseInt(branchNode.data.roleId, 10) : null;
+                                if (branchNode.data.routingType === 'SPECIFIC') {
+                                    bDepartmentId = branchNode.data.targetDepartmentId ? parseInt(branchNode.data.targetDepartmentId, 10) : null;
+                                } else if (branchNode.data.routingType === 'INITIATOR_DEPT' && submitterInfo) {
+                                    const sQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [doc.submitter_id]);
+                                    bDepartmentId = sQuery.rows[0]?.department_id || null;
+                                }
+                            } else {
+                                bAssigneeId = branchNode.data?.assignee ? parseInt(branchNode.data.assignee, 10) : null;
+                            }
+
                             branches.push({
                                 parallelNodeId: targetNode.id,
                                 nodeId: branchNode.id,
-                                assigneeId: branchNode.data?.assignee ? parseInt(branchNode.data.assignee, 10) : null,
+                                assigneeId: bAssigneeId,
+                                roleId: bRoleId,
+                                departmentId: bDepartmentId,
                                 status: 'Pending'
                             });
                         }
@@ -330,7 +357,17 @@ router.post('/approve', authenticateToken, async (req, res) => {
                 } else {
                     // It's a task (approval) node — this is the next human step
                     nextNodeId = targetNode.id;
-                    nextAssigneeId = targetNode.data?.assignee ? parseInt(targetNode.data.assignee, 10) : null;
+                    if (targetNode.data?.assignmentStrategy === 'role_based') {
+                        nextRoleId = targetNode.data.roleId ? parseInt(targetNode.data.roleId, 10) : null;
+                        if (targetNode.data.routingType === 'SPECIFIC') {
+                            nextDepartmentId = targetNode.data.targetDepartmentId ? parseInt(targetNode.data.targetDepartmentId, 10) : null;
+                        } else if (targetNode.data.routingType === 'INITIATOR_DEPT' && doc.submitter_id) {
+                            const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [doc.submitter_id]);
+                            nextDepartmentId = submitterDeptQuery.rows[0]?.department_id || null;
+                        }
+                    } else {
+                        nextAssigneeId = targetNode.data?.assignee ? parseInt(targetNode.data.assignee, 10) : null;
+                    }
                     isFinalStep = false;
                     break;
                 }
@@ -342,10 +379,10 @@ router.post('/approve', authenticateToken, async (req, res) => {
             // Fan out: set document to point at the parallel node, store all branch data
             const parallelNodeId = parallelBranches[0].parallelNodeId;
             await pool.query(
-                'UPDATE documents SET current_node_id = $1, current_assignee_id = NULL, parallel_branch_data = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+                'UPDATE documents SET current_node_id = $1, current_assignee_id = NULL, current_role_id = NULL, current_department_id = NULL, parallel_branch_data = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
                 [parallelNodeId, JSON.stringify(parallelBranches), documentId]
             );
-            // Notify all parallel assignees at once
+            // Notify all parallel assignees at once (Emails to role-pools isn't trivial, so we stick to explicit assignees for emails here)
             for (const branch of parallelBranches) {
                 if (branch.assigneeId) {
                     await sendNotificationEmail(
@@ -359,7 +396,7 @@ router.post('/approve', authenticateToken, async (req, res) => {
 
         } else if (isFinalStep) {
             await pool.query(
-                "UPDATE documents SET status = 'Approved', current_node_id = NULL, current_assignee_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+                "UPDATE documents SET status = 'Approved', current_node_id = NULL, current_assignee_id = NULL, current_role_id = NULL, current_department_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
                 [documentId]
             );
             await sendNotificationEmail(
@@ -373,8 +410,8 @@ router.post('/approve', authenticateToken, async (req, res) => {
             await stampApprovedDocument(doc.file_path, userQuery.rows[0].name);
         } else {
             await pool.query(
-                "UPDATE documents SET current_node_id = $1, current_assignee_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
-                [nextNodeId, nextAssigneeId, documentId]
+                "UPDATE documents SET current_node_id = $1, current_assignee_id = $2, current_role_id = $3, current_department_id = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5",
+                [nextNodeId, nextAssigneeId, nextRoleId, nextDepartmentId, documentId]
             );
             if (nextAssigneeId) {
                 await sendNotificationEmail(

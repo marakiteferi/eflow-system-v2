@@ -32,7 +32,20 @@ const BaseNode = ({ id, typeName, icon, bgColor, borderColor, textColor, title, 
 
 // 1. Task (Approval) Node
 const TaskNode = ({ id, data, selected }) => {
-  const badgeText = data.assignee ? `👤 ${data.staffList?.find(s => s.id === parseInt(data.assignee))?.name || 'User'}` : '⚠️ Unassigned';
+  let badgeText = '⚠️ Unassigned';
+
+  if (data.assignmentStrategy === 'role_based') {
+    const roleName = data.rolesList?.find(r => r.id === parseInt(data.roleId))?.name || 'Role';
+    if (data.routingType === 'ANY') badgeText = `👥 Any ${roleName}`;
+    else if (data.routingType === 'INITIATOR_DEPT') badgeText = `🏢 Dept ${roleName}`;
+    else if (data.routingType === 'SPECIFIC') {
+      const deptName = data.departments?.find(d => d.id === parseInt(data.targetDepartmentId))?.name || 'Dept';
+      badgeText = `🏢 ${deptName} ${roleName}`;
+    }
+  } else if (data.assignee) {
+    badgeText = `👤 ${data.staffList?.find(s => s.id === parseInt(data.assignee))?.name || 'User'}`;
+  }
+
   return (
     <>
       <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-blue-500" />
@@ -174,7 +187,7 @@ const EmailProperties = ({ data, onChange }) => {
 // ==========================================
 // 2. RIGHT INSPECTOR PANEL
 // ==========================================
-const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [] }) => {
+const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [], rolesList = [], departments = [] }) => {
   // Hooks MUST be called before any early returns (React rules of hooks)
   const [newCheckItem, setNewCheckItem] = useState('');
 
@@ -215,14 +228,83 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
         {selectedNode.type === 'task' && (
           <>
             <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Assign To</label>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Who Should Complete This Step?</label>
               <select
-                value={data.assignee || ''} onChange={(e) => onChange('assignee', e.target.value)}
-                className="w-full text-sm border-gray-300 rounded p-2 border bg-white"
+                value={data.assignmentStrategy || 'specific_user'}
+                onChange={(e) => {
+                  onChange('assignmentStrategy', e.target.value);
+                  if (e.target.value === 'specific_user') {
+                    onChange('roleId', null);
+                    onChange('routingType', null);
+                    onChange('targetDepartmentId', null);
+                  } else {
+                    onChange('assignee', null);
+                    onChange('routingType', 'ANY');
+                  }
+                }}
+                className="w-full text-sm border-gray-300 rounded p-2 border bg-white mb-3"
               >
-                <option value="">-- Any Staff --</option>
-                {staffList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                <option value="specific_user">A Specific Person</option>
+                <option value="role_based">By Role & Department</option>
               </select>
+
+              {(data.assignmentStrategy === 'specific_user' || !data.assignmentStrategy) ? (
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Select Person</label>
+                  <select
+                    value={data.assignee || ''} onChange={(e) => onChange('assignee', e.target.value)}
+                    className="w-full text-sm border-gray-300 rounded p-2 border bg-white mb-2"
+                  >
+                    <option value="">-- Any System User --</option>
+                    {staffList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <div className="bg-blue-50 border border-blue-100 p-3 rounded-md mb-2">
+                  <div className="mb-3">
+                    <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Select Role</label>
+                    <select
+                      value={data.roleId || ''} onChange={(e) => onChange('roleId', e.target.value)}
+                      className="w-full text-sm border-blue-200 rounded p-1.5 focus:ring-blue-500 border bg-white"
+                    >
+                      <option value="">-- Select Role (e.g. Head of Dept) --</option>
+                      {rolesList.filter(r => r.is_active || r.id <= 3).map(r => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {data.roleId && (
+                    <div className="mb-3">
+                      <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Department Routing</label>
+                      <select
+                        value={data.routingType || 'ANY'} onChange={(e) => onChange('routingType', e.target.value)}
+                        className="w-full text-sm border-blue-200 rounded p-1.5 focus:ring-blue-500 border bg-white"
+                      >
+                        <option value="ANY">Any Department (Global)</option>
+                        <option value="INITIATOR_DEPT">Applicant's Department</option>
+                        <option value="SPECIFIC">A Specific Department</option>
+                      </select>
+                      {data.routingType === 'INITIATOR_DEPT' && (
+                        <p className="text-[9px] text-blue-600 mt-1 leading-tight">Routes to a user holding this role in the submitter's department.</p>
+                      )}
+                    </div>
+                  )}
+
+                  {data.roleId && data.routingType === 'SPECIFIC' && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Select Specific Department</label>
+                      <select
+                        value={data.targetDepartmentId || ''} onChange={(e) => onChange('targetDepartmentId', e.target.value)}
+                        className="w-full text-sm border-blue-200 rounded p-1.5 focus:ring-blue-500 border bg-white"
+                      >
+                        <option value="">-- Select Department --</option>
+                        {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="bg-red-50 p-3 rounded border border-red-100">
@@ -367,6 +449,7 @@ const WorkflowBuilderInner = () => {
   const [savedWorkflows, setSavedWorkflows] = useState([]);
   const [staffList, setStaffList] = useState([]);
   const [rolesList, setRolesList] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [allowedSubmitters, setAllowedSubmitters] = useState([]);
 
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -389,14 +472,16 @@ const WorkflowBuilderInner = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [wfRes, staffRes, rolesRes] = await Promise.all([
+        const [wfRes, staffRes, rolesRes, deptRes] = await Promise.all([
           api.get('/workflows'),
           api.get('/admin/users'),
-          api.get('/admin/roles')
+          api.get('/admin/roles'),
+          api.get('/admin/departments')
         ]);
         setSavedWorkflows(wfRes.data);
         setStaffList(staffRes.data.filter(u => u.role_id === 2 || u.role_name === 'Staff' || u.role_id > 3));
         setRolesList(rolesRes.data);
+        setDepartments(deptRes.data || []);
       } catch (err) { console.error('Failed to load builder data', err); }
     };
     fetchData();
@@ -446,9 +531,10 @@ const WorkflowBuilderInner = () => {
   }, []);
 
   // Ensure staffList is available in node data (for the badges in TaskNode)
+  // Ensure context lists are available in node data (for the badges in TaskNode)
   useEffect(() => {
-    setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, staffList } })));
-  }, [staffList]);
+    setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, staffList, rolesList, departments } })));
+  }, [staffList, rolesList, departments]);
 
   // Drag and Drop Handlers
   const onDragOver = useCallback((event) => {
@@ -474,12 +560,12 @@ const WorkflowBuilderInner = () => {
       id: `${type}_${Date.now()}`,
       type,
       position,
-      data: { label, staffList },
+      data: { label, staffList, rolesList, departments },
     };
 
     setNodes((nds) => nds.concat(newNode));
     setSelectedNodeId(newNode.id); // Auto-select on drop
-  }, [project, staffList]);
+  }, [project, staffList, rolesList, departments]);
 
 
   // Load/Save
@@ -496,7 +582,7 @@ const WorkflowBuilderInner = () => {
 
       const loadedNodes = (flowData.nodes || []).map(node => ({
         ...node,
-        data: { ...node.data, staffList }
+        data: { ...node.data, staffList, rolesList, departments }
       }));
       setNodes(loadedNodes); setEdges(flowData.edges || []);
       setAllowedSubmitters(flowData.metadata?.allowedSubmitters || []);
@@ -696,6 +782,8 @@ const WorkflowBuilderInner = () => {
             updateNodeData={updateNodeData}
             closePanel={() => { setSelectedNodeId(null); setPanelForceClosed(true); }}
             staffList={staffList}
+            rolesList={rolesList}
+            departments={departments}
           />
         )}
       </div>
