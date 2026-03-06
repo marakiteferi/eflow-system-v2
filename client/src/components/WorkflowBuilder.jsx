@@ -366,9 +366,13 @@ const WorkflowBuilderInner = () => {
 
   const [savedWorkflows, setSavedWorkflows] = useState([]);
   const [staffList, setStaffList] = useState([]);
+  const [rolesList, setRolesList] = useState([]);
+  const [allowedSubmitters, setAllowedSubmitters] = useState([]);
 
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [panelForceClosed, setPanelForceClosed] = useState(false);
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const builderContainerRef = useRef(null);
 
   const reactFlowWrapper = useRef(null);
   const { project } = useReactFlow();
@@ -385,12 +389,14 @@ const WorkflowBuilderInner = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [wfRes, staffRes] = await Promise.all([
+        const [wfRes, staffRes, rolesRes] = await Promise.all([
           api.get('/workflows'),
-          api.get('/admin/users')
+          api.get('/admin/users'),
+          api.get('/admin/roles')
         ]);
         setSavedWorkflows(wfRes.data);
         setStaffList(staffRes.data.filter(u => u.role_id === 2 || u.role_name === 'Staff' || u.role_id > 3));
+        setRolesList(rolesRes.data);
       } catch (err) { console.error('Failed to load builder data', err); }
     };
     fetchData();
@@ -481,7 +487,7 @@ const WorkflowBuilderInner = () => {
     const wfId = e.target.value;
     setSelectedWorkflowId(wfId);
     setSelectedNodeId(null);
-    if (!wfId) { setNodes([]); setEdges([]); setWorkflowName(''); return; }
+    if (!wfId) { setNodes([]); setEdges([]); setWorkflowName(''); setAllowedSubmitters([]); return; }
 
     const wf = savedWorkflows.find(w => w.id === parseInt(wfId));
     if (wf) {
@@ -493,6 +499,7 @@ const WorkflowBuilderInner = () => {
         data: { ...node.data, staffList }
       }));
       setNodes(loadedNodes); setEdges(flowData.edges || []);
+      setAllowedSubmitters(flowData.metadata?.allowedSubmitters || []);
     }
   };
 
@@ -526,7 +533,11 @@ const WorkflowBuilderInner = () => {
         delete cleanData.staffList; // strip large redundant arrays before saving
         return { ...n, data: cleanData };
       });
-      const flowData = JSON.stringify({ nodes: cleanedNodes, edges });
+      const flowData = JSON.stringify({
+        nodes: cleanedNodes,
+        edges,
+        metadata: { allowedSubmitters }
+      });
 
       if (selectedWorkflowId) {
         await api.put(`/workflows/${selectedWorkflowId}`, { name: workflowName, flow_structure: flowData });
@@ -547,17 +558,47 @@ const WorkflowBuilderInner = () => {
 
   const handleClear = () => {
     if (window.confirm('Clear canvas?')) {
-      setNodes([]); setEdges([]); setSelectedNodeId(null);
+      setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]);
     }
   }
 
+  const toggleFullScreen = () => {
+    if (!document.fullscreenElement) {
+      if (builderContainerRef.current) {
+        builderContainerRef.current.requestFullscreen().catch(err => {
+          alert(`Error attempting to enable full-screen mode: ${err.message}`);
+        });
+      }
+      setIsFullScreen(true);
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+        setIsFullScreen(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullScreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   const selectedNode = nodes.find(n => n.id === selectedNodeId);
 
+  const handleRoleToggle = (roleId) => {
+    setAllowedSubmitters(prev =>
+      prev.includes(roleId) ? prev.filter(r => r !== roleId) : [...prev, roleId]
+    );
+  };
+
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-140px)] min-h-[700px]">
+    <div ref={builderContainerRef} className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-140px)] min-h-[700px] w-full">
 
       {/* TOP BAR */}
-      <div className="flex px-4 py-3 border-b border-gray-200 bg-white items-center gap-4 z-10 shrink-0">
+      <div className="flex px-4 py-3 border-b border-gray-200 bg-white items-center gap-4 z-10 shrink-0 flex-wrap">
         <select value={selectedWorkflowId} onChange={handleLoadWorkflow} className="px-3 py-1.5 border border-gray-300 rounded text-sm bg-gray-50 focus:outline-none focus:ring-1 focus:ring-blue-500 w-48">
           <option value="">+ New Flow</option>
           {savedWorkflows.map(wf => <option key={wf.id} value={wf.id}>{wf.name}</option>)}
@@ -567,10 +608,52 @@ const WorkflowBuilderInner = () => {
 
         <input
           type="text" placeholder="Enter Workflow Name..." value={workflowName} onChange={(e) => setWorkflowName(e.target.value)}
-          className="flex-grow max-w-sm px-3 py-1.5 border-none text-lg font-bold text-gray-800 placeholder-gray-400 focus:ring-0 outline-none"
+          className="flex-grow max-w-[200px] px-3 py-1.5 border-none text-lg font-bold text-gray-800 placeholder-gray-400 focus:ring-0 outline-none"
         />
 
+        <div className="h-5 w-px bg-gray-300 hidden sm:block"></div>
+
+        <div className="flex items-center gap-2 relative group hidden sm:flex">
+          <span className="text-xs font-bold text-gray-500">Allowed Roles:</span>
+          <div className="relative cursor-pointer">
+            <div className="px-3 py-1.5 border border-gray-300 rounded text-xs bg-white text-gray-700 font-medium hover:border-blue-400 transition-colors flex items-center gap-2">
+              <span>{allowedSubmitters.length === 0 ? 'All Roles (Global)' : `${allowedSubmitters.length} Roles Selected`}</span>
+              <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </div>
+            {/* Dropdown Menu */}
+            <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 shadow-xl rounded-lg py-2 hidden group-hover:block z-50">
+              <div className="px-3 pb-2 border-b border-gray-100 mb-1">
+                <p className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">Select Roles</p>
+              </div>
+              <div className="max-h-56 overflow-y-auto">
+                <label className="flex items-center gap-3 px-3 py-1.5 hover:bg-blue-50 cursor-pointer transition-colors group/item">
+                  <input type="checkbox" checked={allowedSubmitters.includes(1)} onChange={() => handleRoleToggle(1)} className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer" />
+                  <span className={`text-sm ${allowedSubmitters.includes(1) ? 'text-blue-700 font-medium' : 'text-gray-700'}`}>Student (Legacy)</span>
+                </label>
+                <label className="flex items-center gap-3 px-3 py-1.5 hover:bg-blue-50 cursor-pointer transition-colors group/item">
+                  <input type="checkbox" checked={allowedSubmitters.includes(2)} onChange={() => handleRoleToggle(2)} className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer" />
+                  <span className={`text-sm ${allowedSubmitters.includes(2) ? 'text-blue-700 font-medium' : 'text-gray-700'}`}>Staff (Legacy)</span>
+                </label>
+                {rolesList.filter(r => r.is_active).map(role => (
+                  <label key={role.id} className="flex items-center gap-3 px-3 py-1.5 hover:bg-blue-50 cursor-pointer transition-colors group/item">
+                    <input type="checkbox" checked={allowedSubmitters.includes(role.id)} onChange={() => handleRoleToggle(role.id)} className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer" />
+                    <span className={`text-sm ${allowedSubmitters.includes(role.id) ? 'text-blue-700 font-medium' : 'text-gray-700'}`}>{role.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="flex-grow"></div>
+
+        <button onClick={toggleFullScreen} className="text-gray-500 hover:text-blue-600 p-1.5 rounded bg-gray-50 border border-gray-200 mr-2" title="Toggle Full Screen">
+          {isFullScreen ? (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 11lm0 0l-4-4m4 4v-3m0 3H6m6-6l4-4m-4 4h3m-3 0v-3m0 9l4 4m-4-4v3m0-3h3M9 15l-4 4m4-4h-3m3 0v3" /></svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+          )}
+        </button>
 
         <button onClick={handleClear} className="text-gray-500 hover:text-red-500 font-medium text-sm px-3">Clear</button>
         <button onClick={validateAndSave} disabled={isValidating} className={`bg-indigo-600 text-white px-5 py-2 rounded font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-indigo-700'}`}>
