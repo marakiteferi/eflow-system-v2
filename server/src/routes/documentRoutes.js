@@ -71,6 +71,8 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
 
         let initialNodeId = null;
         let initialAssigneeId = null;
+        let initialRoleId = null;
+        let initialDepartmentId = null;
         // Pitfall 3 FIX: originalSlaDeadline is set once at upload time and NEVER changed again.
         let originalSlaDeadline = null;
 
@@ -84,10 +86,20 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
                 const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
                 if (startNode) {
                     initialNodeId = startNode.id;
-                    let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
 
-                    // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
-                    initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
+                    if (startNode.data?.assignmentStrategy === 'role_based') {
+                        initialRoleId = startNode.data.roleId ? parseInt(startNode.data.roleId, 10) : null;
+                        if (startNode.data.routingType === 'SPECIFIC') {
+                            initialDepartmentId = startNode.data.targetDepartmentId ? parseInt(startNode.data.targetDepartmentId, 10) : null;
+                        } else if (startNode.data.routingType === 'INITIATOR_DEPT') {
+                            const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [submitter_id]);
+                            initialDepartmentId = submitterDeptQuery.rows[0]?.department_id || null;
+                        }
+                    } else {
+                        let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
+                        // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
+                        initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
+                    }
 
                     // Pitfall 3: Stamp the original SLA deadline from the first node's slaHours
                     const slaHours = startNode.data?.slaHours ? parseFloat(startNode.data.slaHours) : null;
@@ -101,9 +113,9 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
         const extracted_text = await extractText(req.file.path, req.file.mimetype);
 
         const newDoc = await pool.query(
-            `INSERT INTO documents (title, file_path, extracted_text, submitter_id, workflow_id, current_node_id, current_assignee_id, metadata_tag, status, original_sla_deadline) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Pending', $9) RETURNING *`,
-            [title, req.file.path, extracted_text, submitter_id, workflow_id || null, initialNodeId, initialAssigneeId, metadata_tag || null, originalSlaDeadline]
+            `INSERT INTO documents (title, file_path, extracted_text, submitter_id, workflow_id, current_node_id, current_assignee_id, current_role_id, current_department_id, metadata_tag, status, original_sla_deadline) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'Pending', $11) RETURNING *`,
+            [title, req.file.path, extracted_text, submitter_id, workflow_id || null, initialNodeId, initialAssigneeId, initialRoleId, initialDepartmentId, metadata_tag || null, originalSlaDeadline]
         );
 
         res.status(201).json({ message: 'Document submitted', document: newDoc.rows[0] });
@@ -125,6 +137,8 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
         const workflow_id = docQuery.rows[0].workflow_id;
         let initialNodeId = null;
         let initialAssigneeId = null;
+        let initialRoleId = null;
+        let initialDepartmentId = null;
         let originalSlaDeadline = null;
 
         if (workflow_id) {
@@ -137,10 +151,20 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
                 const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
                 if (startNode) {
                     initialNodeId = startNode.id;
-                    let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
 
-                    // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
-                    initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
+                    if (startNode.data?.assignmentStrategy === 'role_based') {
+                        initialRoleId = startNode.data.roleId ? parseInt(startNode.data.roleId, 10) : null;
+                        if (startNode.data.routingType === 'SPECIFIC') {
+                            initialDepartmentId = startNode.data.targetDepartmentId ? parseInt(startNode.data.targetDepartmentId, 10) : null;
+                        } else if (startNode.data.routingType === 'INITIATOR_DEPT') {
+                            const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [req.user.id]);
+                            initialDepartmentId = submitterDeptQuery.rows[0]?.department_id || null;
+                        }
+                    } else {
+                        let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
+                        // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
+                        initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
+                    }
 
                     // Pitfall 3: Reset original SLA deadline on resubmit (fresh document lifecycle)
                     const slaHours = startNode.data?.slaHours ? parseFloat(startNode.data.slaHours) : null;
@@ -155,10 +179,10 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
 
         await pool.query(
             `UPDATE documents SET file_path = $1, extracted_text = $2, status = 'Pending',
-             current_node_id = $3, current_assignee_id = $4,
-             original_sla_deadline = $5, delegation_sla_deadline = NULL,
-             updated_at = CURRENT_TIMESTAMP WHERE id = $6`,
-            [req.file.path, extracted_text, initialNodeId, initialAssigneeId, originalSlaDeadline, documentId]
+             current_node_id = $3, current_assignee_id = $4, current_role_id = $5, current_department_id = $6,
+             original_sla_deadline = $7, delegation_sla_deadline = NULL,
+             updated_at = CURRENT_TIMESTAMP WHERE id = $8`,
+            [req.file.path, extracted_text, initialNodeId, initialAssigneeId, initialRoleId, initialDepartmentId, originalSlaDeadline, documentId]
         );
 
         await pool.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Document Resubmitted by User')", [documentId, req.user.id]);
@@ -197,11 +221,19 @@ router.get('/', authenticateToken, async (req, res) => {
                 SELECT DISTINCT d.* 
                 FROM documents d 
                 LEFT JOIN approvals a ON a.document_id = d.id AND a.approver_id = $1
-                WHERE (d.status = 'Pending' AND (d.current_assignee_id = $1 OR d.current_assignee_id IS NULL))
+                WHERE 
+                    (d.status = 'Pending' AND (
+                        d.current_assignee_id = $1 
+                        OR (
+                            d.current_assignee_id IS NULL 
+                            AND d.current_role_id = $2
+                            AND (d.current_department_id IS NULL OR d.current_department_id = $3)
+                        )
+                    ))
                    OR a.approver_id = $1
                 ORDER BY d.created_at DESC
             `;
-            values = [req.user.id];
+            values = [req.user.id, req.user.role_id, req.user.department_id];
         } else {
             query = "SELECT * FROM documents ORDER BY created_at DESC";
             values = [];
