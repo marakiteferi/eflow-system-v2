@@ -155,12 +155,21 @@ router.post('/approve', authenticateToken, async (req, res) => {
     try {
         await pool.query('BEGIN');
 
-        // Fetch doc details including file_path for stamping!
+        // Fetch doc details including file_path and extracted_text for inheritance!
         const docQuery = await pool.query(
-            'SELECT title, submitter_id, workflow_id, current_node_id, metadata_tag, file_path, parallel_branch_data FROM documents WHERE id = $1',
+            'SELECT title, submitter_id, workflow_id, current_node_id, metadata_tag, file_path, extracted_text, parallel_branch_data FROM documents WHERE id = $1',
             [documentId]
         );
         const doc = docQuery.rows[0];
+
+        // FEATURE 2: Prerequisite check
+        const prereqCheck = await pool.query(
+            'SELECT id FROM document_prerequisites WHERE parent_document_id = $1 AND fulfilled_by_document_id IS NULL',
+            [documentId]
+        );
+        if (prereqCheck.rows.length > 0) {
+            return res.status(400).json({ message: `Cannot approve. Waiting for ${prereqCheck.rows.length} clearance document(s).` });
+        }
 
         // Pre-fetch submitter info once — used by email nodes for template variables
         let submitterInfo = null;
@@ -178,6 +187,77 @@ router.post('/approve', authenticateToken, async (req, res) => {
                 .replace(/\{\{submitter_email\}\}/gi, submitterInfo?.email || '')
                 .replace(/\{\{submitter_name\}\}/gi, submitterInfo?.name || '')
                 .replace(/\{\{document_title\}\}/gi, doc.title || '');
+        };
+
+        // Helper: Execute Email Node
+        const executeEmailNode = async (tNode) => {
+            const recipientRaw = tNode.data?.recipient || '';
+            const resolvedRecipient = resolveTemplate(recipientRaw);
+            const resolvedSubject = resolveTemplate(tNode.data?.subject || 'E-flow Notification');
+            const resolvedBody = resolveTemplate(tNode.data?.body || '');
+            console.log(`\n📧 WORKFLOW EMAIL NODE — Sending to: ${resolvedRecipient} | Subject: ${resolvedSubject}`);
+            try {
+                if (resolvedRecipient) {
+                    const info = await transporter.sendMail({
+                        from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
+                        to: resolvedRecipient,
+                        subject: resolvedSubject,
+                        html: `
+                            <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eaeaea; border-radius: 8px; max-width: 500px;">
+                                <h2 style="color: #4f46e5;">E-flow Notification</h2>
+                                <p style="font-size: 16px; color: #374151; white-space: pre-line;">${resolvedBody}</p>
+                                <hr style="border: none; border-top: 1px solid #eaeaea; margin: 20px 0;" />
+                                <p style="font-size: 12px; color: #9ca3af;">This is an automated message from the E-flow document system.</p>
+                            </div>
+                        `
+                    });
+                    console.log(`✅ WORKFLOW EMAIL SENT — MessageId: ${info.messageId}`);
+                } else {
+                    console.warn('⚠️ Workflow email node skipped — recipient address is empty');
+                }
+            } catch (emailErr) {
+                console.error('❌ Workflow email node send FAILED:', emailErr);
+            }
+        };
+
+        // Helper: Execute Spawn Node
+        const executeSpawnNode = async (tNode) => {
+            const spawnIds = tNode.data?.spawnIds;
+            if (spawnIds) {
+                const ids = spawnIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+                for (const sId of ids) {
+                    const wQuery = await pool.query('SELECT name, flow_structure FROM workflows WHERE id = $1', [sId]);
+                    if (wQuery.rows.length > 0) {
+                        const swf = typeof wQuery.rows[0].flow_structure === 'string' ? JSON.parse(wQuery.rows[0].flow_structure) : wQuery.rows[0].flow_structure;
+                        const snodes = swf.nodes || [];
+                        const sedges = swf.edges || [];
+                        const start = snodes.find(n => !sedges.some(e => e.target === n.id)) || snodes[0];
+                        
+                        let initialAssigneeId = null;
+                        let initialRoleId = null;
+                        let initialDepartmentId = null;
+
+                        if (start && start.type === 'task') {
+                            if (start.data?.assignmentStrategy === 'role_based') {
+                                initialRoleId = start.data.roleId ? parseInt(start.data.roleId, 10) : null;
+                                if (start.data.routingType === 'SPECIFIC') {
+                                    initialDepartmentId = start.data.targetDepartmentId ? parseInt(start.data.targetDepartmentId, 10) : null;
+                                } else if (start.data.routingType === 'INITIATOR_DEPT') {
+                                    const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [doc.submitter_id]);
+                                    initialDepartmentId = submitterDeptQuery.rows[0]?.department_id || null;
+                                }
+                            } else {
+                                initialAssigneeId = start.data?.assignee ? parseInt(start.data.assignee, 10) : null;
+                            }
+                        }
+
+                        await pool.query(
+                            `INSERT INTO documents (title, submitter_id, workflow_id, current_node_id, current_assignee_id, current_role_id, current_department_id, status, file_path, extracted_text) VALUES ($1, $2, $3, $4, $5, $6, $7, 'Pending', $8, $9)`,
+                            [`Spawned: ${wQuery.rows[0].name}`, doc.submitter_id, sId, start?.id, initialAssigneeId, initialRoleId, initialDepartmentId, doc.file_path, doc.extracted_text]
+                        );
+                    }
+                }
+            }
         };
 
         let nextNodeId = null;
@@ -277,38 +357,13 @@ router.post('/approve', authenticateToken, async (req, res) => {
 
                 } else if (targetNode.type === 'email') {
                     // ✅ EMAIL NODE: Execute inline — send an actual email, then continue walking
-                    const recipientRaw = targetNode.data?.recipient || '';
-                    const resolvedRecipient = resolveTemplate(recipientRaw);
-                    const resolvedSubject = resolveTemplate(targetNode.data?.subject || 'E-flow Notification');
-                    const resolvedBody = resolveTemplate(targetNode.data?.body || '');
-
-                    console.log(`\n📧 WORKFLOW EMAIL NODE — Sending to: ${resolvedRecipient} | Subject: ${resolvedSubject}`);
-
-                    try {
-                        if (resolvedRecipient) {
-                            const info = await transporter.sendMail({
-                                from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
-                                to: resolvedRecipient,
-                                subject: resolvedSubject,
-                                html: `
-                                    <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eaeaea; border-radius: 8px; max-width: 500px;">
-                                        <h2 style="color: #4f46e5;">E-flow Notification</h2>
-                                        <p style="font-size: 16px; color: #374151; white-space: pre-line;">${resolvedBody}</p>
-                                        <hr style="border: none; border-top: 1px solid #eaeaea; margin: 20px 0;" />
-                                        <p style="font-size: 12px; color: #9ca3af;">This is an automated message from the E-flow document system.</p>
-                                    </div>
-                                `
-                            });
-                            console.log(`✅ WORKFLOW EMAIL SENT — MessageId: ${info.messageId}`);
-                        } else {
-                            console.warn('⚠️ Workflow email node skipped — recipient address is empty');
-                        }
-                    } catch (emailErr) {
-                        console.error('❌ Workflow email node send FAILED:', emailErr);
-                        // Don't abort the whole workflow for an email failure — just log it
-                    }
-
+                    await executeEmailNode(targetNode);
                     // Continue walking from this email node to find the next real step
+                    currentId = targetNode.id;
+
+                } else if (targetNode.type === 'spawn') {
+                    // FEATURE 3: Spawn on approval
+                    await executeSpawnNode(targetNode);
                     currentId = targetNode.id;
 
                 } else if (targetNode.type === 'delay') {
@@ -316,11 +371,22 @@ router.post('/approve', authenticateToken, async (req, res) => {
                     currentId = targetNode.id;
 
                 } else if (targetNode.type === 'parallel') {
-                    // ✅ PARALLEL NODE: Fan out to ALL connected task nodes simultaneously
+                    // ✅ PARALLEL NODE: Fan out to ALL connected branches simultaneously
                     const parallelOutgoing = edges.filter(e => e.source === targetNode.id);
                     const branches = [];
                     for (const pe of parallelOutgoing) {
-                        const branchNode = nodes.find(n => n.id === pe.target);
+                        let branchNode = nodes.find(n => n.id === pe.target);
+                        
+                        // Trace through any transparent side-effect nodes on this single parallel branch
+                        while (branchNode && branchNode.type !== 'task') {
+                            if (branchNode.type === 'email') await executeEmailNode(branchNode);
+                            else if (branchNode.type === 'spawn') await executeSpawnNode(branchNode);
+                            
+                            const nextEdge = edges.find(e => e.source === branchNode.id);
+                            if (nextEdge) branchNode = nodes.find(n => n.id === nextEdge.target);
+                            else { branchNode = null; break; }
+                        }
+
                         if (branchNode && branchNode.type === 'task') {
                             let bAssigneeId = null;
                             let bRoleId = null;
@@ -399,6 +465,19 @@ router.post('/approve', authenticateToken, async (req, res) => {
                 "UPDATE documents SET status = 'Approved', current_node_id = NULL, current_assignee_id = NULL, current_role_id = NULL, current_department_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
                 [documentId]
             );
+
+            // FEATURE 2: Fulfill any dependent workflows where THIS document is required
+            await pool.query(
+                `UPDATE document_prerequisites dp
+                 SET fulfilled_by_document_id = $1, fulfilled_at = CURRENT_TIMESTAMP 
+                 FROM documents d
+                 WHERE dp.required_workflow_id = $2 
+                 AND dp.fulfilled_by_document_id IS NULL
+                 AND dp.parent_document_id = d.id 
+                 AND d.submitter_id = $3`,
+                [documentId, doc.workflow_id, doc.submitter_id]
+            );
+
             await sendNotificationEmail(
                 doc.submitter_id,
                 'Document Fully Approved!',

@@ -96,6 +96,15 @@ const ParallelNode = ({ id, data, selected }) => (
 );
 
 
+// 6. Spawn Node
+const SpawnNode = ({ id, data, selected }) => (
+  <>
+    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-pink-500" />
+    <BaseNode id={id} typeName="Spawn" icon="🚀" bgColor="bg-pink-500" borderColor="border-pink-200" textColor="text-pink-600" title={data.label || 'Spawn Workflows'} badge={data.spawnIds ? `${data.spawnIds.split(',').length} Flows` : 'Unconfigured'} selected={selected} />
+    <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-pink-500" />
+  </>
+);
+
 // ==========================================
 // 2b. EMAIL PROPERTIES SUB-COMPONENT
 // ==========================================
@@ -187,7 +196,7 @@ const EmailProperties = ({ data, onChange }) => {
 // ==========================================
 // 2. RIGHT INSPECTOR PANEL
 // ==========================================
-const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [], rolesList = [], departments = [] }) => {
+const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [], rolesList = [], departments = [], savedWorkflows = [], selectedWorkflowId = '' }) => {
   // Hooks MUST be called before any early returns (React rules of hooks)
   const [newCheckItem, setNewCheckItem] = useState('');
 
@@ -388,6 +397,35 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
           </div>
         )}
 
+        {/* 6. SPAWN PROPERTIES */}
+        {selectedNode.type === 'spawn' && (
+          <div>
+            <label className="block text-xs font-bold text-pink-800 mb-1">Workflows to Spawn</label>
+            <div className="max-h-32 overflow-y-auto border border-pink-200 rounded text-sm bg-white p-1">
+              {savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0)).map(wf => {
+                const isSelected = (data.spawnIds || '').split(',').includes(wf.id.toString());
+                return (
+                  <label key={wf.id} className="flex items-center gap-2 p-1.5 hover:bg-pink-50 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={isSelected}
+                      onChange={(e) => {
+                        let ids = (data.spawnIds || '').split(',').filter(Boolean);
+                        if (e.target.checked) ids.push(wf.id.toString());
+                        else ids = ids.filter(id => id !== wf.id.toString());
+                        onChange('spawnIds', ids.join(','));
+                      }}
+                      className="text-pink-600 focus:ring-pink-500 rounded"
+                    />
+                    <span className="truncate text-xs text-gray-700" title={wf.name}>{wf.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1">Spawns new detached document workflows automatically.</p>
+          </div>
+        )}
+
       </div>
     </div>
   );
@@ -428,6 +466,9 @@ const Sidebar = () => {
         <div className="bg-white border hover:border-purple-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'delay', 'Wait Timer')} draggable>
           <span className="text-purple-500">⏳</span> Delay Timer
         </div>
+        <div className="bg-white border hover:border-pink-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'spawn', 'Spawn Flows')} draggable>
+          <span className="text-pink-500">🚀</span> Spawn Flows
+        </div>
       </div>
       <div className="p-3 mt-auto border-t border-gray-200 text-[10px] text-gray-400">
         Drag nodes onto the canvas. Press <kbd className="bg-gray-200 px-1 py-0.5 rounded text-gray-600">Del</kbd> to remove.
@@ -451,6 +492,8 @@ const WorkflowBuilderInner = () => {
   const [rolesList, setRolesList] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [allowedSubmitters, setAllowedSubmitters] = useState([]);
+  const [prerequisiteWorkflowId, setPrerequisiteWorkflowId] = useState('');
+  const [clearanceWorkflowIds, setClearanceWorkflowIds] = useState('');
 
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [panelForceClosed, setPanelForceClosed] = useState(false);
@@ -465,7 +508,8 @@ const WorkflowBuilderInner = () => {
     condition: ConditionNode,
     email: EmailNode,
     delay: DelayNode,
-    parallel: ParallelNode
+    parallel: ParallelNode,
+    spawn: SpawnNode
   }), []);
 
   // Fetch init data
@@ -586,6 +630,8 @@ const WorkflowBuilderInner = () => {
       }));
       setNodes(loadedNodes); setEdges(flowData.edges || []);
       setAllowedSubmitters(flowData.metadata?.allowedSubmitters || []);
+      setPrerequisiteWorkflowId(flowData.metadata?.prerequisiteWorkflowId || '');
+      setClearanceWorkflowIds(flowData.metadata?.clearanceWorkflowIds?.join(',') || '');
     }
   };
 
@@ -619,10 +665,15 @@ const WorkflowBuilderInner = () => {
         delete cleanData.staffList; // strip large redundant arrays before saving
         return { ...n, data: cleanData };
       });
+      const metadataObj = { allowedSubmitters, prerequisiteWorkflowId: prerequisiteWorkflowId || null };
+      if (clearanceWorkflowIds) {
+        metadataObj.clearanceWorkflowIds = clearanceWorkflowIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+      }
+
       const flowData = JSON.stringify({
         nodes: cleanedNodes,
         edges,
-        metadata: { allowedSubmitters }
+        metadata: metadataObj
       });
 
       if (selectedWorkflowId) {
@@ -644,7 +695,7 @@ const WorkflowBuilderInner = () => {
 
   const handleClear = () => {
     if (window.confirm('Clear canvas?')) {
-      setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]);
+      setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowId(''); setClearanceWorkflowIds('');
     }
   }
 
@@ -731,6 +782,56 @@ const WorkflowBuilderInner = () => {
           </div>
         </div>
 
+        <div className="flex items-center gap-2 relative group hidden sm:flex">
+          <span className="text-xs font-bold text-gray-500">Prerequisite:</span>
+          <select 
+            value={prerequisiteWorkflowId} 
+            onChange={(e) => setPrerequisiteWorkflowId(e.target.value)}
+            className="px-3 py-1.5 border border-gray-300 rounded text-xs bg-white text-gray-700 hover:border-blue-400 focus:outline-none focus:border-blue-500 max-w-[150px]"
+          >
+            <option value="">None</option>
+            {savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0)).map(wf => (
+              <option key={wf.id} value={wf.id}>{wf.name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2 relative group hidden lg:flex">
+          <span className="text-xs font-bold text-gray-500" title="Workflow IDs that must be approved before this document can be fully completely routed.">Clearances:</span>
+          <div className="relative">
+            <select 
+              className="px-3 py-1.5 border border-gray-300 rounded text-xs bg-white text-gray-700 hover:border-blue-400 focus:outline-none focus:border-blue-500 max-w-[150px] appearance-none"
+              defaultValue=""
+              onChange={(e) => {
+                const val = e.target.value;
+                if (!val) return;
+                let ids = clearanceWorkflowIds ? clearanceWorkflowIds.split(',').filter(Boolean) : [];
+                if (!ids.includes(val)) ids.push(val);
+                setClearanceWorkflowIds(ids.join(','));
+                e.target.value = "";
+              }}
+            >
+              <option value="">+ Add Clearance</option>
+              {savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0)).map(wf => (
+                <option key={wf.id} value={wf.id}>{wf.name}</option>
+              ))}
+            </select>
+          </div>
+          {clearanceWorkflowIds && (
+             <div className="flex gap-1 flex-wrap max-w-[200px]">
+               {clearanceWorkflowIds.split(',').filter(Boolean).map(id => {
+                  const wf = savedWorkflows.find(w => w.id === parseInt(id));
+                  return (
+                    <span key={id} className="bg-gray-100 border border-gray-200 text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1">
+                      <span className="truncate max-w-[80px]" title={wf?.name}>{wf?.name || `ID:${id}`}</span>
+                      <button onClick={() => setClearanceWorkflowIds(clearanceWorkflowIds.split(',').filter(x => x !== id).join(','))} className="text-red-500 font-bold">&times;</button>
+                    </span>
+                  );
+               })}
+             </div>
+          )}
+        </div>
+
         <div className="flex-grow"></div>
 
         <button onClick={toggleFullScreen} className="text-gray-500 hover:text-blue-600 p-1.5 rounded bg-gray-50 border border-gray-200 mr-2" title="Toggle Full Screen">
@@ -784,6 +885,8 @@ const WorkflowBuilderInner = () => {
             staffList={staffList}
             rolesList={rolesList}
             departments={departments}
+            savedWorkflows={savedWorkflows}
+            selectedWorkflowId={selectedWorkflowId}
           />
         )}
       </div>

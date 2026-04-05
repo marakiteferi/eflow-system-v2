@@ -60,6 +60,7 @@ const timeAgo = (dateStr) => {
 const UploadModal = ({ workflow, onClose, onSuccess }) => {
     const [title, setTitle] = useState('');
     const [file, setFile] = useState(null);
+    const [metadataTag, setMetadataTag] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
@@ -71,6 +72,7 @@ const UploadModal = ({ workflow, onClose, onSuccess }) => {
         fd.append('title', title);
         fd.append('document', file);
         fd.append('workflow_id', workflow.id);
+        if (metadataTag) fd.append('metadata_tag', metadataTag);
         try {
             await api.post('/documents/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
             onSuccess();
@@ -113,6 +115,23 @@ const UploadModal = ({ workflow, onClose, onSuccess }) => {
                             required
                         />
                     </div>
+                    {(() => {
+                        const flowData = typeof workflow.flow_structure === 'string' ? JSON.parse(workflow.flow_structure) : workflow.flow_structure;
+                        const startNode = (flowData?.nodes || [])[0];
+                        const tagsStr = startNode?.data?.allowedTags;
+                        if (!tagsStr) return null;
+                        const tagsList = tagsStr.split(',').map(s => s.trim()).filter(Boolean);
+                        if (tagsList.length === 0) return null;
+                        return (
+                            <div>
+                                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Select Category / Tag</label>
+                                <select value={metadataTag} onChange={e => setMetadataTag(e.target.value)} required className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    <option value="">-- Required --</option>
+                                    {tagsList.map(tag => <option key={tag} value={tag}>{tag}</option>)}
+                                </select>
+                            </div>
+                        );
+                    })()}
                     <div className="flex gap-3 pt-2">
                         <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
                             Cancel
@@ -349,7 +368,17 @@ const StudentPortal = () => {
                             const wf = workflows.find(w => w.id === doc.workflow_id);
                             return (
                                 <tr key={doc.id} className="hover:bg-gray-50 cursor-pointer transition-colors" onClick={() => setViewingDoc(doc)}>
-                                    <td className="px-6 py-4 text-sm font-semibold text-gray-900">{doc.title}</td>
+                                    <td className="px-6 py-4">
+                                        <p className="text-sm font-semibold text-gray-900">{doc.title}</p>
+                                        {parseInt(doc.total_prereqs || 0) > 0 && (
+                                            <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+                                                <div className="w-full max-w-[150px] bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                                                    <div className="bg-blue-600 h-1.5 transition-all duration-300" style={{ width: `${(doc.fulfilled_prereqs / doc.total_prereqs) * 100}%` }}></div>
+                                                </div>
+                                                <p className="text-[10px] text-gray-500 mt-1 font-semibold">{doc.fulfilled_prereqs} of {doc.total_prereqs} clearances approved</p>
+                                            </div>
+                                        )}
+                                    </td>
                                     <td className="px-6 py-4 text-sm text-gray-500">{wf?.name || 'General'}</td>
                                     <td className="px-6 py-4">
                                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusStyle(doc.status)}`}>
@@ -390,24 +419,42 @@ const StudentPortal = () => {
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                         {studentWorkflows.map((wf, idx) => {
                             const { bg, icon, emoji } = SERVICE_COLORS[idx % SERVICE_COLORS.length];
+                            
+                            const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
+                            const prereqId = flowData.metadata?.prerequisiteWorkflowId;
+                            let isLocked = false;
+                            let lockMessage = '';
+                            if (prereqId) {
+                                const hasApproved = myDocs.some(d => d.workflow_id === parseInt(prereqId) && d.status === 'Approved');
+                                if (!hasApproved) {
+                                    isLocked = true;
+                                    const prereqWf = workflows.find(w => w.id === parseInt(prereqId));
+                                    lockMessage = `Requires "${prereqWf?.name || 'Previous workflow'}" to be approved first.`;
+                                }
+                            }
+
                             return (
                                 <button
                                     key={wf.id}
-                                    onClick={() => setUploadWf(wf)}
-                                    className="bg-white rounded-xl border border-gray-200 p-6 text-left hover:shadow-md hover:border-blue-200 transition-all group"
+                                    onClick={() => !isLocked && setUploadWf(wf)}
+                                    className={`bg-white rounded-xl border border-gray-200 p-6 text-left transition-all group relative ${isLocked ? 'opacity-60 cursor-not-allowed bg-gray-50' : 'hover:shadow-md hover:border-blue-200'}`}
                                 >
+                                    {isLocked && <div className="absolute top-3 right-3 text-[10px] bg-red-100 text-red-700 px-2 py-1 rounded font-bold" title={lockMessage}>Locked 🔒</div>}
                                     <div className="flex items-start justify-between mb-4">
-                                        <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center text-xl`}>
+                                        <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center text-xl ${isLocked ? 'grayscale opacity-50' : ''}`}>
                                             {emoji}
                                         </div>
-                                        <span className={`${icon} opacity-0 group-hover:opacity-100 transition-opacity`}>
-                                            <IcoArrow />
-                                        </span>
+                                        {!isLocked && (
+                                            <span className={`${icon} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                                                <IcoArrow />
+                                            </span>
+                                        )}
                                     </div>
                                     <h3 className="font-bold text-gray-900 text-base mb-1.5">{wf.name}</h3>
                                     <p className="text-sm text-gray-500 leading-relaxed">
                                         {wf.description || 'Submit a request through this workflow for review and approval.'}
                                     </p>
+                                    {isLocked && <p className="text-xs text-red-600 mt-2 font-semibold">{lockMessage}</p>}
                                 </button>
                             );
                         })}
