@@ -3,6 +3,7 @@ import api from '../api';
 
 const DocumentDetailsModal = ({ document, onClose }) => {
   const [history, setHistory] = useState([]);
+  const [clearances, setClearances] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [scale, setScale] = useState(1);
   
@@ -21,8 +22,12 @@ const DocumentDetailsModal = ({ document, onClose }) => {
     const fetchHistory = async () => {
       if (!document) return; // Safe guard inside the hook
       try {
-        const response = await api.get(`/documents/${document.id}/history`);
-        setHistory(response.data);
+        const [histRes, clearRes] = await Promise.all([
+          api.get(`/documents/${document.id}/history`),
+          api.get(`/documents/${document.id}/clearances`).catch(() => ({ data: [] }))
+        ]);
+        setHistory(histRes.data);
+        setClearances(clearRes.data);
       } catch (error) {
         console.error('Failed to fetch history:', error);
       } finally {
@@ -63,15 +68,20 @@ const DocumentDetailsModal = ({ document, onClose }) => {
   // ==========================================
   if (!document) return null;
 
-  const handleDownload = async (e) => {
-    e.preventDefault();
+  const handleDownload = async (e, customUrl, customTitle) => {
+    if (e) e.preventDefault();
+    const targetUrl = customUrl || fileUrl;
+    const isTargetPdf = targetUrl.toLowerCase().endsWith('.pdf');
+    const isTargetImage = targetUrl.match(/\.(jpg|jpeg|png)$/i);
+    const targetTitle = customTitle || document.title;
+    
     try {
-      const response = await fetch(fileUrl);
+      const response = await fetch(targetUrl);
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const link = window.document.createElement('a');
       link.href = url;
-      link.download = `Stamped_${document.title.replace(/\s+/g, '_')}${isImage ? '.jpg' : '.pdf'}`;
+      link.download = `Stamped_${targetTitle.replace(/\s+/g, '_')}${isTargetImage ? '.jpg' : isTargetPdf ? '.pdf' : '.pdf'}`;
       window.document.body.appendChild(link);
       link.click();
       window.document.body.removeChild(link);
@@ -186,6 +196,50 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                 value={document.extracted_text || 'No text extracted from this document.'}
               />
             </div>
+
+            {/* Clearances Block */}
+            {clearances.length > 0 && (
+              <div className="flex flex-col bg-gray-50 p-4 border border-gray-200 rounded-xl">
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Required Clearances</h3>
+                  <span className="text-xs font-bold text-gray-500 bg-white px-2 py-1 rounded border border-gray-200">{clearances.filter(c => c.fulfilled_by_document_id).length} / {clearances.length} Completed</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-1.5 mb-4 overflow-hidden">
+                  <div className="bg-blue-600 h-1.5 transition-all duration-300" style={{ width: `${(clearances.filter(c => c.fulfilled_by_document_id).length / clearances.length) * 100}%` }}></div>
+                </div>
+                <div className="space-y-3">
+                  {clearances.map((c, idx) => (
+                    <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-bold text-gray-800">{c.required_workflow_name}</span>
+                        {c.fulfilled_by_document_id ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold text-green-700 bg-green-100 px-2 py-0.5 rounded text-center leading-none">✓ Fulfilled</span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded text-center leading-none">⏳ Pending</span>
+                        )}
+                      </div>
+                      {c.fulfilled_by_document_id ? (
+                        <div className="text-xs text-gray-600 flex items-center justify-between mt-1">
+                          <span className="truncate max-w-[200px]" title={c.fulfilling_document_title}>Via: {c.fulfilling_document_title}</span>
+                          <button 
+                            onClick={(e) => {
+                              const fp = c.fulfilling_file_path.replace(/\\/g, '/');
+                              const targetUrl = `http://localhost:5000/${fp.startsWith('/') ? fp.substring(1) : fp}?v=${Date.now()}`;
+                              handleDownload(e, targetUrl, c.fulfilling_document_title);
+                            }}
+                            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-semibold transition-colors"
+                          >
+                            ⬇ View File
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-500 italic mt-1">Applicant must submit a separate document for this workflow.</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Document History Timeline */}
             <div className="flex-grow flex flex-col">

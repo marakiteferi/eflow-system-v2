@@ -75,13 +75,27 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
         let initialDepartmentId = null;
         // Pitfall 3 FIX: originalSlaDeadline is set once at upload time and NEVER changed again.
         let originalSlaDeadline = null;
+        let uploadedFlowData = null;
 
         if (workflow_id) {
             const wfQuery = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [workflow_id]);
             if (wfQuery.rows.length > 0) {
                 const flowData = typeof wfQuery.rows[0].flow_structure === 'string' ? JSON.parse(wfQuery.rows[0].flow_structure) : wfQuery.rows[0].flow_structure;
+                uploadedFlowData = flowData;
                 const nodes = flowData.nodes || [];
                 const edges = flowData.edges || [];
+
+                // Prerequisite Workflow Check
+                const prereqWfId = flowData.metadata?.prerequisiteWorkflowId;
+                if (prereqWfId) {
+                    const prereqCheck = await pool.query(
+                        'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
+                        [prereqWfId, submitter_id, 'Approved']
+                    );
+                    if (prereqCheck.rows.length === 0) {
+                        return res.status(400).json({ message: 'You must complete the prerequisite workflow before submitting this request.' });
+                    }
+                }
 
                 const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
                 if (startNode) {
@@ -118,6 +132,12 @@ router.post('/upload', authenticateToken, upload.single('document'), async (req,
             [title, req.file.path, extracted_text, submitter_id, workflow_id || null, initialNodeId, initialAssigneeId, initialRoleId, initialDepartmentId, metadata_tag || null, originalSlaDeadline]
         );
 
+        if (uploadedFlowData?.metadata?.clearanceWorkflowIds) {
+            for (const cId of uploadedFlowData.metadata.clearanceWorkflowIds) {
+                await pool.query('INSERT INTO document_prerequisites (parent_document_id, required_workflow_id) VALUES ($1, $2)', [newDoc.rows[0].id, cId]);
+            }
+        }
+
         res.status(201).json({ message: 'Document submitted', document: newDoc.rows[0] });
     } catch (err) {
         console.error(err);
@@ -147,6 +167,18 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
                 const flowData = typeof wfQuery.rows[0].flow_structure === 'string' ? JSON.parse(wfQuery.rows[0].flow_structure) : wfQuery.rows[0].flow_structure;
                 const nodes = flowData.nodes || [];
                 const edges = flowData.edges || [];
+
+                // Prerequisite Workflow Check
+                const prereqWfId = flowData.metadata?.prerequisiteWorkflowId;
+                if (prereqWfId) {
+                    const prereqCheck = await pool.query(
+                        'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
+                        [prereqWfId, req.user.id, 'Approved']
+                    );
+                    if (prereqCheck.rows.length === 0) {
+                        return res.status(400).json({ message: 'You must complete the prerequisite workflow before resubmitting this request.' });
+                    }
+                }
 
                 const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
                 if (startNode) {
@@ -209,16 +241,50 @@ router.get('/:id/history', authenticateToken, async (req, res) => {
     }
 });
 
+// 3b. GET: Fetch clearances for a document
+router.get('/:id/clearances', authenticateToken, async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                dp.id as prereq_id,
+                dp.required_workflow_id,
+                w.name as required_workflow_name,
+                dp.fulfilled_by_document_id,
+                dp.fulfilled_at,
+                d.title as fulfilling_document_title,
+                d.file_path as fulfilling_file_path,
+                d.status as fulfilling_status
+            FROM document_prerequisites dp
+            JOIN workflows w ON dp.required_workflow_id = w.id
+            LEFT JOIN documents d ON dp.fulfilled_by_document_id = d.id
+            WHERE dp.parent_document_id = $1
+            ORDER BY w.name ASC
+        `;
+        const result = await pool.query(query, [req.params.id]);
+        res.status(200).json(result.rows);
+    } catch (err) {
+        console.error('Error fetching document clearances:', err);
+        res.status(500).json({ message: 'Server error fetching clearances' });
+    }
+});
+
 // 4. GET: Fetch documents based on role
 router.get('/', authenticateToken, async (req, res) => {
     try {
         let query; let values;
         if (req.user.role_id === 1) {
-            query = "SELECT d.*, (SELECT comments FROM approvals a WHERE a.document_id = d.id ORDER BY id DESC LIMIT 1) as latest_comment FROM documents d WHERE d.submitter_id = $1 ORDER BY d.created_at DESC";
+            query = `
+                SELECT d.*, 
+                (SELECT comments FROM approvals a WHERE a.document_id = d.id ORDER BY id DESC LIMIT 1) as latest_comment,
+                (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id) as total_prereqs,
+                (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id AND dp.fulfilled_by_document_id IS NOT NULL) as fulfilled_prereqs
+                FROM documents d WHERE d.submitter_id = $1 ORDER BY d.created_at DESC`;
             values = [req.user.id];
         } else if (req.user.role_id === 2 || req.user.role_id > 3) {
             query = `
-                SELECT DISTINCT d.* 
+                SELECT DISTINCT d.*,
+                (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id) as total_prereqs,
+                (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id AND dp.fulfilled_by_document_id IS NOT NULL) as fulfilled_prereqs
                 FROM documents d 
                 LEFT JOIN approvals a ON a.document_id = d.id AND a.approver_id = $1
                 WHERE 
@@ -235,7 +301,11 @@ router.get('/', authenticateToken, async (req, res) => {
             `;
             values = [req.user.id, req.user.role_id, req.user.department_id];
         } else {
-            query = "SELECT * FROM documents ORDER BY created_at DESC";
+            query = `
+                SELECT d.*,
+                (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id) as total_prereqs,
+                (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id AND dp.fulfilled_by_document_id IS NOT NULL) as fulfilled_prereqs
+                FROM documents d ORDER BY created_at DESC`;
             values = [];
         }
         const result = await pool.query(query, values);

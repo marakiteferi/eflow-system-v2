@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Cube</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      perspective: 1000px;
+    }
+
+    .cube {
+      width: 200px;
+      height: 200px;
+      position: relative;
+      transform-style: preserve-3d;
+      transform: rotateX(-30deg) rotateY(-45deg);
+      animation: spin 10s infinite linear;
+    }
+
+    .face {
+      position: absolute;
+      width: 200px;
+      height: 200px;
+      background: rgba(255, 255, 255, 0.8);
+      border: 2px solid #fff;
+      box-sizing: border-box;
+      opacity: 0.9;
+    }
+
+    .face.front  { transform: translateZ(100px); }
+    .face.back   { transform: rotateY(180deg) translateZ(100px); }
+    .face.left   { transform: rotateY(-90deg) translateZ(100px); }
+    .face.right  { transform: rotateY(90deg) translateZ(100px); }
+    .face.top    { transform: rotateX(90deg) translateZ(100px); }
+    .face.bottom { transform: rotateX(-90deg) translateZ(100px); }
+
+    @keyframes spin {
+      from { transform: rotateX(-30deg) rotateY(-45deg); }
+      to { transform: rotateX(-30deg) rotateY(235deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="cube">
+    <div class="face front" style="background: #ff4136;"></div>
+    <div class="face back" style="background: #ff851b;"></div>
+    <div class="face left" style="background: #2ecc40;"></div>
+    <div class="face right" style="background: #0198e1;"></div>
+    <div class="face top" style="background: #f1c40f;"></div>
+    <div class="face bottom" style="background: #b10dc9;"></div>
+  </div>
+</body>
+</html>
