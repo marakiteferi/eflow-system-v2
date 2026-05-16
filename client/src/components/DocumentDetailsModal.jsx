@@ -1,9 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useContext } from 'react';
 import api from '../api';
+import { AuthContext } from '../context/AuthContext';
 
 const DocumentDetailsModal = ({ document, onClose }) => {
+  const { user } = useContext(AuthContext);
   const [history, setHistory] = useState([]);
   const [clearances, setClearances] = useState([]);
+  const [attachments, setAttachments] = useState([]);
+  const [attachFile, setAttachFile] = useState(null);
+  const [attachDesc, setAttachDesc] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [scale, setScale] = useState(1);
   
@@ -22,12 +27,14 @@ const DocumentDetailsModal = ({ document, onClose }) => {
     const fetchHistory = async () => {
       if (!document) return; // Safe guard inside the hook
       try {
-        const [histRes, clearRes] = await Promise.all([
+        const [histRes, clearRes, attachRes] = await Promise.all([
           api.get(`/documents/${document.id}/history`),
-          api.get(`/documents/${document.id}/clearances`).catch(() => ({ data: [] }))
+          api.get(`/documents/${document.id}/clearances`).catch(() => ({ data: [] })),
+          api.get(`/documents/${document.id}/attachments`).catch(() => ({ data: [] }))
         ]);
         setHistory(histRes.data);
         setClearances(clearRes.data);
+        setAttachments(attachRes.data);
       } catch (error) {
         console.error('Failed to fetch history:', error);
       } finally {
@@ -101,6 +108,27 @@ const DocumentDetailsModal = ({ document, onClose }) => {
       window.document.exitFullscreen();
     }
   };
+
+  const handleAttach = async () => {
+    if (!attachFile) return;
+    const formData = new FormData();
+    formData.append('file', attachFile);
+    formData.append('description', attachDesc);
+    try {
+      await api.post(`/documents/${document.id}/attachments`, formData);
+      alert('File attached successfully');
+      setAttachFile(null);
+      setAttachDesc('');
+      const res = await api.get(`/documents/${document.id}/attachments`);
+      setAttachments(res.data);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to attach file');
+    }
+  };
+
+  const isAssignee = document.current_assignee_id === user?.id;
+  const isAdmin = user?.role_id === 3;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-[60]">
@@ -270,6 +298,65 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                 </div>
               )}
             </div>
+
+            {/* Attachments Section */}
+            {(attachments.length > 0 || isAssignee || isAdmin) && (
+              <div className="flex flex-col mt-6 border-t pt-4">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-2 border-b pb-2">Attachments</h3>
+                
+                {attachments.length > 0 && (
+                  <div className="space-y-2 mb-4">
+                    {attachments.map(att => (
+                      <div key={att.id} className="flex flex-col bg-gray-50 p-2 rounded border border-gray-200">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm font-bold">{att.file_name}</span>
+                          <button 
+                            onClick={(e) => {
+                              const fp = att.file_path.replace(/\\/g, '/');
+                              const targetUrl = `http://localhost:5000/${fp.startsWith('/') ? fp.substring(1) : fp}?v=${Date.now()}`;
+                              handleDownload(e, targetUrl, att.file_name);
+                            }}
+                            className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded hover:bg-indigo-200"
+                          >
+                            Download
+                          </button>
+                        </div>
+                        {att.description && <span className="text-xs text-gray-600 mt-1">{att.description}</span>}
+                        <span className="text-[10px] text-gray-400 mt-1">Uploaded by {att.uploaded_by_name} on {new Date(att.created_at).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {(isAssignee || isAdmin) && (
+                  <div className="bg-gray-50 p-3 rounded border border-gray-200">
+                    <h4 className="text-xs font-bold text-gray-600 uppercase mb-2">Attach Supporting File</h4>
+                    <div className="flex flex-col gap-2">
+                      <input 
+                        type="file" 
+                        onChange={(e) => setAttachFile(e.target.files[0])} 
+                        className="text-sm text-gray-600"
+                      />
+                      <input 
+                        type="text" 
+                        placeholder="Description (optional)" 
+                        value={attachDesc} 
+                        onChange={e => setAttachDesc(e.target.value)} 
+                        className="p-2 border border-gray-300 rounded text-sm w-full"
+                      />
+                      <button 
+                        onClick={handleAttach}
+                        disabled={!attachFile}
+                        className={`py-1.5 rounded text-sm font-bold text-white transition-colors ${attachFile ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-400 cursor-not-allowed'}`}
+                      >
+                        Upload Attachment
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
 
           </div>
         </div>

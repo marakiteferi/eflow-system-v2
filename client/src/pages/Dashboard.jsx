@@ -231,6 +231,16 @@ const Dashboard = () => {
     return currentNode.data.allowedTags.split(',').map(t => t.trim()).filter(Boolean);
   };
 
+  // Helper: get allowed actions array from the current workflow node for a given document
+  const getNodeAllowedActions = (doc) => {
+    if (!doc.workflow_id || !doc.current_node_id) return ['approve', 'reject'];
+    const wf = workflows.find(w => w.id === doc.workflow_id);
+    if (!wf) return ['approve', 'reject'];
+    const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
+    const currentNode = (flowData.nodes || []).find(n => n.id === doc.current_node_id);
+    return currentNode?.data?.allowedActions || ['approve', 'reject'];
+  };
+
   // Handler: set a tag on the document via the new backend endpoint  
   const handleSetTag = async (docId, tag) => {
     setLocalTags(prev => ({ ...prev, [docId]: tag }));
@@ -390,6 +400,7 @@ const Dashboard = () => {
                 ) : (
                   filteredDocs.filter(d => d.status === 'Pending').map((doc) => {
                     const allowedTags = getNodeAllowedTags(doc);
+                    const allowedActions = getNodeAllowedActions(doc);
                     const currentTag = localTags[doc.id] ?? (doc.metadata_tag || '');
                     return (
                       <tr key={doc.id} className="hover:bg-gray-50 transition-colors group">
@@ -422,8 +433,15 @@ const Dashboard = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-center space-x-2">
                           {/* Quick Action Buttons */}
                           <button onClick={() => setViewingDocument(doc)} className="text-gray-400 hover:text-blue-600 px-2 py-1 rounded text-xs font-bold border border-transparent hover:border-blue-200 hover:bg-blue-50 transition-colors">View</button>
-                          <button onClick={() => handleRequestApproval(doc.id)} className="text-green-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-green-200 hover:bg-green-600 transition-colors">Approve</button>
-                          <button onClick={() => openRejectModal(doc.id)} className="text-red-500 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-200 hover:bg-red-500 transition-colors">Reject</button>
+                          {allowedActions.includes('approve') && (
+                            <button onClick={() => handleRequestApproval(doc.id)} className="text-green-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-green-200 hover:bg-green-600 transition-colors">Approve</button>
+                          )}
+                          {allowedActions.includes('reject') && (
+                            <button onClick={() => openRejectModal(doc.id)} className="text-red-500 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-200 hover:bg-red-500 transition-colors">Reject</button>
+                          )}
+                          {allowedActions.includes('attach_documents') && (
+                            <button onClick={() => setViewingDocument(doc)} className="text-indigo-500 hover:text-white px-3 py-1 rounded text-xs font-bold border border-indigo-200 hover:bg-indigo-500 transition-colors">Attach</button>
+                          )}
                         </td>
                       </tr>
                     );

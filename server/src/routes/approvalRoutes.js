@@ -127,12 +127,19 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
         otpStore.set(req.user.id, { otp, documentId, expires: Date.now() + 5 * 60000 });
 
         const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [req.user.id]);
+        const { email, name } = userQuery.rows[0];
 
-        console.log(`\n======================================================`);
-        console.log(`🔑 OTP FOR ${userQuery.rows[0].email}: ${otp}`);
-        console.log(`======================================================\n`);
+        // Send the OTP via email
+        await transporter.sendMail({
+            from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
+            to: email,
+            subject: 'Your E-flow Approval OTP',
+            html: `<p>Hello ${name},</p>
+                   <p>Your one-time approval code is: <b style="font-size:24px">${otp}</b></p>
+                   <p>This code expires in 5 minutes.</p>`
+        });
 
-        res.status(200).json({ message: 'OTP generated successfully (Check Terminal)' });
+        res.status(200).json({ message: 'OTP sent to your email' });
     } catch (err) {
         console.error('OTP error:', err);
         res.status(500).json({ message: 'Error generating OTP' });
@@ -294,9 +301,29 @@ router.post('/approve', authenticateToken, async (req, res) => {
                         'UPDATE documents SET parallel_branch_data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
                         [JSON.stringify(existingBranches), documentId]
                     );
+                    const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET || 'default_secret';
+                    const docBuffer = fs.readFileSync(doc.file_path);
+                    const documentHash = crypto.createHash('sha256').update(docBuffer).digest('hex');
+                    
+                    const prevApproval = await pool.query(
+                        'SELECT id, approval_signature, document_hash, approver_id, created_at FROM approvals WHERE document_id = $1 ORDER BY id DESC LIMIT 1',
+                        [documentId]
+                    );
+                    const prev = prevApproval.rows[0];
+                    
+                    const approvalDate = new Date();
+                    const dataToSign = `${documentHash}|${req.user.id}|${approvalDate.toISOString()}`;
+                    const approvalSignature = crypto.createHmac('sha256', SIGNING_SECRET).update(dataToSign).digest('hex');
+                    
+                    let previousApprovalHash = null;
+                    if (prev) {
+                        const prevData = `${prev.document_hash}|${prev.approver_id}|${prev.approval_signature}`;
+                        previousApprovalHash = crypto.createHash('sha256').update(prevData).digest('hex');
+                    }
+
                     await pool.query(
-                        "INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Approved', $4)",
-                        [documentId, req.user.id, doc.current_node_id || 'parallel', comments || 'Verified by 2FA']
+                        "INSERT INTO approvals (document_id, approver_id, node_id, status, comments, document_hash, approval_signature, previous_approval_id, previous_approval_hash, created_at) VALUES ($1, $2, $3, 'Approved', $4, $5, $6, $7, $8, $9)",
+                        [documentId, req.user.id, doc.current_node_id || 'parallel', comments || 'Verified by 2FA', documentHash, approvalSignature, prev?.id || null, previousApprovalHash, approvalDate]
                     );
                     await pool.query(
                         "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Parallel Branch Approved — Awaiting Other Reviewers')",
@@ -502,9 +529,31 @@ router.post('/approve', authenticateToken, async (req, res) => {
         }
 
         const nodeLogLabel = doc.current_node_id || 'System';
+        
+        // Create HMAC signature for main workflow approval
+        const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET || 'default_secret';
+        const docBuffer = fs.readFileSync(doc.file_path);
+        const documentHash = crypto.createHash('sha256').update(docBuffer).digest('hex');
+        
+        const prevApproval = await pool.query(
+            'SELECT id, approval_signature, document_hash, approver_id, created_at FROM approvals WHERE document_id = $1 ORDER BY id DESC LIMIT 1',
+            [documentId]
+        );
+        const prev = prevApproval.rows[0];
+        
+        const approvalDate = new Date();
+        const dataToSign = `${documentHash}|${req.user.id}|${approvalDate.toISOString()}`;
+        const approvalSignature = crypto.createHmac('sha256', SIGNING_SECRET).update(dataToSign).digest('hex');
+        
+        let previousApprovalHash = null;
+        if (prev) {
+            const prevData = `${prev.document_hash}|${prev.approver_id}|${prev.approval_signature}`;
+            previousApprovalHash = crypto.createHash('sha256').update(prevData).digest('hex');
+        }
+
         await pool.query(
-            "INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Approved', $4)",
-            [documentId, req.user.id, nodeLogLabel, comments || 'Verified by 2FA']
+            "INSERT INTO approvals (document_id, approver_id, node_id, status, comments, document_hash, approval_signature, previous_approval_id, previous_approval_hash, created_at) VALUES ($1, $2, $3, 'Approved', $4, $5, $6, $7, $8, $9)",
+            [documentId, req.user.id, nodeLogLabel, comments || 'Verified by 2FA', documentHash, approvalSignature, prev?.id || null, previousApprovalHash, approvalDate]
         );
 
         const auditMessage = isFinalStep

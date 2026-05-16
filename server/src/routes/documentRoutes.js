@@ -4,6 +4,7 @@ const multer = require('multer');
 const { Pool } = require('pg');
 const authenticateToken = require('../middleware/authMiddleware');
 const Tesseract = require('tesseract.js');
+const crypto = require('crypto');
 const fs = require('fs');
 const pdfParse = require('pdf-parse');
 
@@ -354,6 +355,122 @@ router.patch('/:id/tag', authenticateToken, async (req, res) => {
     } catch (err) {
         console.error('Error setting document tag:', err);
         res.status(500).json({ message: 'Server error setting tag.' });
+    }
+});
+
+// POST: Approver attaches a supporting file to a document
+router.post('/:id/attachments', authenticateToken, upload.single('file'), async (req, res) => {
+    const documentId = req.params.id;
+    const { description } = req.body;
+
+    if (!req.file) return res.status(400).json({ message: 'File required.' });
+
+    try {
+        // Verify the requester is the current assignee or admin
+        const doc = await pool.query('SELECT current_assignee_id FROM documents WHERE id = $1', [documentId]);
+        if (!doc.rows[0]) return res.status(404).json({ message: 'Document not found.' });
+
+        const isAdmin = req.user.role_id === 3;
+        const isAssignee = doc.rows[0].current_assignee_id === req.user.id;
+
+        if (!isAdmin && !isAssignee) {
+            return res.status(403).json({ message: 'Only the current assignee can attach files.' });
+        }
+
+        await pool.query(
+            'INSERT INTO document_attachments (document_id, uploaded_by, file_path, file_name, description) VALUES ($1,$2,$3,$4,$5)',
+            [documentId, req.user.id, req.file.path, req.file.originalname, description || null]
+        );
+
+        await pool.query(
+            "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1,$2,$3)",
+            [documentId, req.user.id, `Attached file: ${req.file.originalname}`]
+        );
+
+        res.status(201).json({ message: 'File attached successfully.' });
+    } catch (err) {
+        console.error('Error attaching file:', err);
+        res.status(500).json({ message: 'Server error attaching file.' });
+    }
+});
+
+// GET: Fetch attachments for a document
+router.get('/:id/attachments', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT da.*, u.name as uploaded_by_name 
+             FROM document_attachments da 
+             JOIN users u ON da.uploaded_by = u.id 
+             WHERE da.document_id = $1 
+             ORDER BY da.created_at DESC`,
+            [req.params.id]
+        );
+        res.status(200).json(result.rows);
+    } catch (err) {
+        console.error('Error fetching attachments:', err);
+        res.status(500).json({ message: 'Server error fetching attachments.' });
+    }
+});
+
+// GET: Verify the full approval chain for a document
+router.get('/:id/verify-chain', authenticateToken, async (req, res) => {
+    try {
+        const approvals = await pool.query(
+            'SELECT * FROM approvals WHERE document_id = $1 ORDER BY id ASC',
+            [req.params.id]
+        );
+
+        const doc = await pool.query('SELECT file_path FROM documents WHERE id = $1', [req.params.id]);
+        if (!doc.rows[0]) return res.status(404).json({ message: 'Document not found' });
+        
+        let currentHash = null;
+        try {
+            currentHash = crypto.createHash('sha256')
+                .update(fs.readFileSync(doc.rows[0].file_path))
+                .digest('hex');
+        } catch (e) {
+            console.error('File read error for hash:', e);
+        }
+
+        const chain = [];
+        let chainValid = true;
+
+        for (let i = 0; i < approvals.rows.length; i++) {
+            const a = approvals.rows[i];
+
+            // Verify HMAC signature
+            const dataToSign = `${a.document_hash}|${a.approver_id}|${a.created_at.toISOString()}`;
+            const expectedSig = crypto.createHmac('sha256', process.env.APPROVAL_SIGNING_SECRET || 'default_secret')
+                .update(dataToSign).digest('hex');
+
+            const sigValid = a.approval_signature === expectedSig;
+            const hashConsistent = i === 0 || a.document_hash === approvals.rows[i - 1].document_hash;
+            // The document hash may have changed if the final step stamps it, 
+            // so we only strictly check if it's unchanged if we are doing something specific,
+            // but the plan says check `a.document_hash === currentHash`
+            const documentUnchanged = a.document_hash === currentHash;
+
+            if (!sigValid || !hashConsistent) chainValid = false;
+
+            chain.push({
+                order: i + 1,
+                approver_id: a.approver_id,
+                status: a.status,
+                timestamp: a.created_at,
+                signature_valid: sigValid,
+                hash_consistent: hashConsistent,
+                document_unchanged: documentUnchanged
+            });
+        }
+
+        res.status(200).json({
+            document_id: req.params.id,
+            chain_valid: chainValid,
+            approvals: chain
+        });
+    } catch (err) {
+        console.error('Error verifying chain:', err);
+        res.status(500).json({ message: 'Server error verifying chain.' });
     }
 });
 

@@ -361,6 +361,29 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
               />
               <p className="text-[10px] text-indigo-600 mt-1">Comma-separated. Staff will see these as a dropdown when tagging this document.</p>
             </div>
+
+            <div className="bg-gray-50 p-3 rounded border border-gray-200 mt-3">
+              <label className="block text-[10px] uppercase font-bold text-gray-600 mb-2">
+                Allowed Actions at This Stage
+              </label>
+              {['approve', 'reject', 'request_revision', 'attach_documents'].map(action => (
+                <label key={action} className="flex items-center gap-2 py-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={(data.allowedActions || ['approve','reject']).includes(action)}
+                    onChange={(e) => {
+                      const current = data.allowedActions || ['approve', 'reject'];
+                      const updated = e.target.checked
+                        ? [...current, action]
+                        : current.filter(a => a !== action);
+                      onChange('allowedActions', updated);
+                    }}
+                    className="text-indigo-600 rounded focus:ring-indigo-500"
+                  />
+                  <span className="text-xs text-gray-700 capitalize">{action.replace(/_/g, ' ')}</span>
+                </label>
+              ))}
+            </div>
           </>
         )}
 
