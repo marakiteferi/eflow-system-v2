@@ -20,6 +20,11 @@ const Dashboard = () => {
   // NEW: upload state for staff services
   const [uploadWf, setUploadWf] = useState(null);
 
+  // NEW: Bulk Import State
+  const [importFile, setImportFile] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [isImporting, setIsImporting] = useState(false);
+
   const [auditLogs, setAuditLogs] = useState([]);
   const [usersList, setUsersList] = useState([]);
   const [adminView, setAdminView] = useState('overview');
@@ -426,17 +431,54 @@ const Dashboard = () => {
               <tbody className="bg-white divide-y divide-gray-100 text-sm">
                 {filteredDocs.filter(d => {
                     if (d.status !== 'Pending') return false;
-                    // If this is a parallel doc and the current user already completed their branch, hide it
+                    
+                    // Is it actually assigned to them?
+                    const isDirectAssignee = d.current_assignee_id === user?.id;
+                    const isRoleAssignee = !d.current_assignee_id && d.current_role_id === user?.role_id && (!d.current_department_id || d.current_department_id === user?.department_id);
+                    
                     const branchData = d.parallel_branch_data;
-                    if (branchData && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
+                    let isParallelAssignee = false;
+                    if (branchData && Array.isArray(branchData)) {
+                        // Already completed?
+                        if (branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
+                        isParallelAssignee = branchData.some(b => {
+                            if (b.status !== 'Pending') return false;
+                            if (b.assigneeId === user?.id) return true;
+                            if (b.roleId === user?.role_id && (!b.departmentId || b.departmentId === user?.department_id)) return true;
+                            return false;
+                        });
+                    } else if (branchData && branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) {
+                        return false;
+                    }
+
+                    if (!isDirectAssignee && !isRoleAssignee && !isParallelAssignee) return false;
                     return true;
                   }).length === 0 ? (
                   <tr><td colSpan="5" className="px-6 py-12 text-center text-gray-500">No pending assignments.</td></tr>
                 ) : (
                   filteredDocs.filter(d => {
                     if (d.status !== 'Pending') return false;
+                    
+                    // Is it actually assigned to them?
+                    const isDirectAssignee = d.current_assignee_id === user?.id;
+                    const isRoleAssignee = !d.current_assignee_id && d.current_role_id === user?.role_id && (!d.current_department_id || d.current_department_id === user?.department_id);
+                    
                     const branchData = d.parallel_branch_data;
-                    if (branchData && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
+                    let isParallelAssignee = false;
+                    if (branchData && Array.isArray(branchData)) {
+                        // Already completed?
+                        if (branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
+                        isParallelAssignee = branchData.some(b => {
+                            if (b.status !== 'Pending') return false;
+                            if (b.assigneeId === user?.id) return true;
+                            if (b.roleId === user?.role_id && (!b.departmentId || b.departmentId === user?.department_id)) return true;
+                            return false;
+                        });
+                    } else if (branchData && branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) {
+                        return false;
+                    }
+
+                    if (!isDirectAssignee && !isRoleAssignee && !isParallelAssignee) return false;
                     return true;
                   }).map((doc) => {
                     const allowedTags = getNodeAllowedTags(doc);
@@ -700,7 +742,124 @@ const Dashboard = () => {
                 {adminView === 'hierarchy' && canManageUsers && <RoleManager />}
 
                 {adminView === 'users' && canManageUsers && (
-                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                  <div className="flex flex-col gap-6">
+                    {/* Bulk Import Panel */}
+                    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                      <div className="flex justify-between items-start mb-4">
+                        <div>
+                          <h3 className="text-lg font-bold text-gray-800">Bulk User Import</h3>
+                          <p className="text-sm text-gray-500">Upload a CSV file with columns: <strong>Name, Email, Role, Department</strong> (Optional).</p>
+                        </div>
+                        <a href="data:text/csv;charset=utf-8,Name,Email,Role,Department%0AJohn%20Doe,john@example.com,Student,Computer%20Science" download="import_template.csv" className="text-sm font-bold text-indigo-600 hover:text-indigo-800">⬇ Download Template</a>
+                      </div>
+                      
+                      {!importPreview ? (
+                        <div className="flex items-center gap-4">
+                          <input 
+                            type="file" 
+                            accept=".csv"
+                            onChange={(e) => setImportFile(e.target.files[0])}
+                            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                          />
+                          <button 
+                            onClick={async () => {
+                              if (!importFile) return;
+                              setIsImporting(true);
+                              const formData = new FormData();
+                              formData.append('file', importFile);
+                              try {
+                                const res = await api.post('/admin/users/import-preview', formData);
+                                setImportPreview(res.data);
+                              } catch (err) {
+                                showToast('error', err.response?.data?.message || 'Failed to parse CSV.');
+                              } finally {
+                                setIsImporting(false);
+                              }
+                            }}
+                            disabled={!importFile || isImporting}
+                            className={`px-4 py-2 rounded font-bold text-white transition-colors shrink-0 ${importFile && !isImporting ? 'bg-indigo-600 hover:bg-indigo-700 shadow-sm' : 'bg-gray-300 cursor-not-allowed text-gray-500'}`}
+                          >
+                            {isImporting ? 'Parsing...' : 'Preview Import'}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-4">
+                          <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg">
+                            <table className="min-w-full divide-y divide-gray-200 text-sm">
+                              <thead className="bg-gray-50 sticky top-0">
+                                <tr>
+                                  <th className="px-4 py-2 text-left font-semibold text-gray-600">Row</th>
+                                  <th className="px-4 py-2 text-left font-semibold text-gray-600">Name</th>
+                                  <th className="px-4 py-2 text-left font-semibold text-gray-600">Email</th>
+                                  <th className="px-4 py-2 text-left font-semibold text-gray-600">Role</th>
+                                  <th className="px-4 py-2 text-left font-semibold text-gray-600">Status</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-100 bg-white">
+                                {importPreview.map((row, idx) => (
+                                  <tr key={idx} className={row.isValid ? '' : 'bg-red-50'}>
+                                    <td className="px-4 py-2">{row.rowNumber}</td>
+                                    <td className="px-4 py-2">{row.name}</td>
+                                    <td className="px-4 py-2">{row.email}</td>
+                                    <td className="px-4 py-2">{row.role}</td>
+                                    <td className="px-4 py-2 font-medium">
+                                      {row.isValid ? (
+                                        <span className="text-green-600">Valid</span>
+                                      ) : (
+                                        <span className="text-red-600 text-xs">{row.error}</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          
+                          <div className="flex justify-between items-center bg-gray-50 p-3 rounded border border-gray-200">
+                            <div className="text-sm text-gray-700">
+                              <span className="font-bold text-green-600">{importPreview.filter(r => r.isValid).length}</span> valid users to import.
+                              <span className="font-bold text-red-600 ml-2">{importPreview.filter(r => !r.isValid).length}</span> errors.
+                            </div>
+                            <div className="flex gap-2">
+                              <button 
+                                onClick={() => { setImportPreview(null); setImportFile(null); }}
+                                className="px-4 py-1.5 rounded text-sm font-bold text-gray-600 border border-gray-300 hover:bg-gray-100 transition-colors"
+                              >
+                                Cancel
+                              </button>
+                              <button 
+                                onClick={async () => {
+                                  setIsImporting(true);
+                                  try {
+                                    const validUsers = importPreview.filter(r => r.isValid);
+                                    if (validUsers.length === 0) {
+                                      showToast('error', 'No valid users to import.');
+                                      return;
+                                    }
+                                    const res = await api.post('/admin/users/import-commit', { validUsers });
+                                    showToast('success', res.data.message);
+                                    setImportPreview(null);
+                                    setImportFile(null);
+                                    fetchData(); // refresh user list
+                                  } catch (err) {
+                                    showToast('error', err.response?.data?.message || 'Failed to import users.');
+                                  } finally {
+                                    setIsImporting(false);
+                                  }
+                                }}
+                                disabled={isImporting || importPreview.filter(r => r.isValid).length === 0}
+                                className="px-4 py-1.5 rounded text-sm font-bold text-white bg-green-600 hover:bg-green-700 transition-colors shadow-sm disabled:opacity-50"
+                              >
+                                {isImporting ? 'Importing...' : 'Confirm & Import Valid Users'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Existing User List */}
+                    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
@@ -736,6 +895,7 @@ const Dashboard = () => {
                       </tbody>
                     </table>
                   </div>
+                </div>
                 )}
 
                 {adminView === 'logs' && (

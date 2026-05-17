@@ -269,10 +269,38 @@ router.post('/approve', authenticateToken, async (req, res) => {
 
         // Fetch doc details including file_path and extracted_text for inheritance!
         const docQuery = await pool.query(
-            'SELECT title, submitter_id, workflow_id, current_node_id, metadata_tag, file_path, extracted_text, parallel_branch_data FROM documents WHERE id = $1',
+            'SELECT title, submitter_id, workflow_id, current_node_id, metadata_tag, file_path, extracted_text, parallel_branch_data, current_assignee_id, current_role_id, current_department_id FROM documents WHERE id = $1',
             [documentId]
         );
         const doc = docQuery.rows[0];
+
+        // ── AUTHORIZATION CHECK ────────────────────────────────────────────────
+        const isSuperAdmin = req.user.role_id === 3;
+        let isAuthorized = isSuperAdmin;
+        
+        if (!isSuperAdmin) {
+            const isDirectAssignee = doc.current_assignee_id === req.user.id;
+            const isRoleAssignee = !doc.current_assignee_id && doc.current_role_id === req.user.role_id && (!doc.current_department_id || doc.current_department_id === req.user.department_id);
+            
+            const existingBranches = doc.parallel_branch_data;
+            let isParallelAssignee = false;
+            if (existingBranches && Array.isArray(existingBranches)) {
+                isParallelAssignee = existingBranches.some(b => {
+                    if (b.status !== 'Pending') return false;
+                    if (b.assigneeId === req.user.id) return true;
+                    if (b.roleId === req.user.role_id && (!b.departmentId || b.departmentId === req.user.department_id)) return true;
+                    return false;
+                });
+            }
+
+            isAuthorized = isDirectAssignee || isRoleAssignee || isParallelAssignee;
+        }
+
+        if (!isAuthorized) {
+            await pool.query('ROLLBACK');
+            return res.status(403).json({ message: 'You are not authorized to approve this document at this stage.' });
+        }
+        // ── END AUTHORIZATION CHECK ────────────────────────────────────────────
 
         // FEATURE 2: Prerequisite check
         const prereqCheck = await pool.query(
