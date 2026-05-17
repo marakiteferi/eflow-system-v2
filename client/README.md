@@ -1,89 +1,101 @@
-# Getting Started with Create React App
+# 🚀 E-Flow System: Advanced Document Workflow & Approval Platform
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+**E-Flow System** is a comprehensive, secure, and dynamic web application designed to digitize, automate, and govern document workflows within an educational or corporate institution. It eliminates the friction of physical paperwork by providing a smart routing engine, secure digital signatures, and rigorous role-based access control.
 
-## Available Scripts
+---
 
-In the project directory, you can run:
+## ✨ Impressive Features & Technical Highlights
 
-### `npm start`
+This project goes beyond a standard CRUD application. It implements enterprise-grade features focusing on security, data integrity, and complex state management:
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+### 1. 🛡️ Cryptographically Secure Digital Signatures
+- **HMAC Hash Chaining:** Every signature and approval step is cryptographically linked using HMAC hashing. This guarantees document integrity—any unauthorized modification to the document or the approval chain is instantly detectable.
+- **OTP Verification via Brevo SMTP:** Before signing, users must authenticate via a One-Time Password (OTP) sent to their registered email.
+- **Canvas Signature Capture:** Integrates a seamless UI for capturing hand-drawn signatures, which are locked after registration with a visual confirmation preview.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+### 2. 🔀 Advanced Workflow Routing Engine
+The heart of E-Flow is its dynamic Workflow Builder, which allows administrators to visually construct complex document paths.
+- **Conditional Routing:** Workflows can automatically branch based on document tags or staff decisions.
+- **Document Chaining & Spawn on Approval:** Approving one document can automatically trigger (spawn) the next required workflow, chaining processes together seamlessly.
+- **Graduation Clearance Node:** Specialized logic nodes designed for complex, multi-departmental approvals like student graduation clearances.
 
-### `npm test`
+### 3. 🔐 Granular Role-Based Access Control (RBAC)
+- **Per-Node Permissions:** Administrators configure exactly what actions (Approve, Reject, Attach) are allowed at each specific node in the workflow.
+- **Strict Document Governance:** The system enforces a strict PDF-only policy with a 10MB file size limit to ensure standardization and security across all uploads.
+- **Dynamic Dashboard:** Staff and students see customized dashboards that only show actions and data relevant to their specific permissions and current tasks.
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### 4. 👥 Bulk User Onboarding & "Magic Link" Authentication
+- **CSV Data Ingestion:** Administrators can upload CSV files to provision hundreds of users instantly. The backend strictly validates the parsed data.
+- **Magic Links:** Newly imported users receive a secure "Magic Link" via email to reset their passwords and activate their accounts without manual administrative overhead.
 
-### `npm run build`
+---
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+## 🛠️ Technology Stack
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+**Frontend:**
+- **React.js** for building a dynamic, interactive user interface.
+- **Vanilla CSS** with a focus on modern, vibrant aesthetics and micro-animations.
+- **react-signature-canvas** for seamless digital signature capture.
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+**Backend:**
+- **Node.js & Express.js** for robust API development.
+- **PostgreSQL (`pg`)** for reliable relational data management.
+- **multer** for secure file handling and storage.
+- **pdf-lib & pdf-parse** for advanced PDF document processing.
+- **bcrypt & jsonwebtoken** for strict authentication and session management.
+- **nodemailer (Brevo SMTP)** for delivering critical OTPs and Magic Links.
 
-### `npm run eject`
+---
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+## 🚀 Getting Started
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### Prerequisites
+- Node.js (v18+ recommended)
+- PostgreSQL database
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+### Installation
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+1. **Clone the repository and install dependencies:**
 
-## Learn More
+   **Backend:**
+   ```bash
+   cd server
+   npm install
+   ```
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+   **Frontend:**
+   ```bash
+   cd client
+   npm install
+   ```
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+2. **Environment Configuration:**
+   - Create a `.env` file in the `server` directory.
+   - Configure your database connection string, JWT secret, and Brevo SMTP credentials.
 
-### Code Splitting
+3. **Run the Application:**
+   
+   **Start the Backend:**
+   ```bash
+   cd server
+   npm run dev
+   ```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+   **Start the Frontend:**
+   ```bash
+   cd client
+   npm start
+   ```
 
-### Analyzing the Bundle Size
+---
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+## 🧪 Testing Accounts
 
-### Making a Progressive Web App
+You can use the following pre-configured accounts to test different roles within the system:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
-accounts for testing 
-
-email: [abebe@example.com]
-password: [123]
-role: student
-
-email: [staff@example.com]
-password: [123]
-role: staff
-
-email: [staff2@example.com]
-password: [123]
-role: staff
-
-email: [admin@example.com]
-password: [123]
-role: admin
-
-
+| Role | Email | Password |
+| :--- | :--- | :--- |
+| **Admin** | `admin@example.com` | `123` |
+| **Staff** | `staff@example.com` | `123` |
+| **Staff 2** | `staff2@example.com` | `123` |
+| **Student** | `abebe@example.com` | `123` |
