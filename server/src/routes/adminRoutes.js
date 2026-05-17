@@ -3,6 +3,21 @@ const router = express.Router();
 const { Pool } = require('pg');
 const authenticateToken = require('../middleware/authMiddleware');
 const { detectCircularSupervisor } = require('../utils/graphHelpers');
+const multer = require('multer');
+const upload = multer({ dest: 'uploads/' });
+const fs = require('fs');
+const csv = require('csv-parser');
+const crypto = require('crypto');
+const bcrypt = require('bcrypt');
+const nodemailer = require('nodemailer');
+
+const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_PORT == 465,
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    tls: { ciphers: 'SSLv3' }
+});
 
 const pool = new Pool({
     user: process.env.DB_USER, host: process.env.DB_HOST, database: process.env.DB_NAME,
@@ -286,6 +301,172 @@ router.put('/users/:id/role', authenticateToken, verifyAdmin, async (req, res) =
     } catch (err) {
         res.status(500).json({ message: 'Error updating user' });
     }
+});
+
+// ==========================================
+// BULK USER IMPORT API
+// ==========================================
+
+router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'CSV file is required.' });
+
+    const results = [];
+    fs.createReadStream(req.file.path)
+        .pipe(csv())
+        .on('data', (data) => results.push(data))
+        .on('end', async () => {
+            try {
+                // Delete the file after parsing
+                fs.unlinkSync(req.file.path);
+                
+                const report = [];
+                for (let i = 0; i < results.length; i++) {
+                    const row = results[i];
+                    // Handle potential BOM or whitespace in headers
+                    const getVal = (key) => {
+                        const matchedKey = Object.keys(row).find(k => k.trim().toLowerCase() === key.toLowerCase());
+                        return matchedKey ? row[matchedKey].trim() : '';
+                    };
+
+                    const Name = getVal('name');
+                    const Email = getVal('email');
+                    const Role = getVal('role');
+                    const Department = getVal('department');
+                    
+                    let error = null;
+                    let roleId = null;
+                    let departmentId = null;
+
+                    if (!Name || !Email || !Role) {
+                        error = 'Name, Email, and Role are required fields.';
+                    } else {
+                        // 1. Check if email exists
+                        const emailCheck = await pool.query('SELECT id FROM users WHERE email = $1', [Email]);
+                        if (emailCheck.rows.length > 0) {
+                            error = 'Email already exists in the system.';
+                        } else {
+                            // 2. Check if role exists
+                            if (Role.toLowerCase() === 'super admin') {
+                                roleId = 3;
+                            } else {
+                                const roleCheck = await pool.query('SELECT id FROM dynamic_roles WHERE name ILIKE $1', [Role]);
+                                if (roleCheck.rows.length === 0) {
+                                    error = `Role "${Role}" not found.`;
+                                } else {
+                                    roleId = roleCheck.rows[0].id;
+                                }
+                            }
+
+                            // 3. Check department if provided
+                            if (!error && Department) {
+                                const deptCheck = await pool.query('SELECT id FROM departments WHERE name ILIKE $1', [Department]);
+                                if (deptCheck.rows.length === 0) {
+                                    error = `Department "${Department}" not found.`;
+                                } else {
+                                    departmentId = deptCheck.rows[0].id;
+                                }
+                            }
+                        }
+                    }
+
+                    report.push({
+                        rowNumber: i + 1,
+                        name: Name,
+                        email: Email,
+                        role: Role,
+                        role_id: roleId,
+                        department: Department,
+                        department_id: departmentId,
+                        isValid: !error,
+                        error: error
+                    });
+                }
+                
+                res.status(200).json(report);
+            } catch (err) {
+                console.error('Import preview error:', err);
+                res.status(500).json({ message: 'Error processing CSV file.' });
+            }
+        });
+});
+
+router.post('/users/import-commit', authenticateToken, verifyAdmin, async (req, res) => {
+    const { validUsers } = req.body;
+    if (!validUsers || !Array.isArray(validUsers) || validUsers.length === 0) {
+        return res.status(400).json({ message: 'No valid users provided to import.' });
+    }
+
+    const imported = [];
+    const failed = [];
+
+    for (const user of validUsers) {
+        if (!user.isValid || !user.email) continue;
+        
+        try {
+            await pool.query('BEGIN');
+            
+            // Generate a high-entropy dummy password
+            const dummyPassword = crypto.randomBytes(32).toString('hex');
+            const hashedPassword = await bcrypt.hash(dummyPassword, 10);
+            
+            const insertRes = await pool.query(
+                'INSERT INTO users (name, email, password_hash, role_id, department_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+                [user.name, user.email, hashedPassword, user.role_id, user.department_id || null]
+            );
+            const newUserId = insertRes.rows[0].id;
+
+            // Generate password reset token (Magic Link)
+            const token = crypto.randomBytes(32).toString('hex');
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+            await pool.query(
+                'INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)',
+                [newUserId, token, expiresAt]
+            );
+
+            // Audit log
+            await pool.query(
+                "INSERT INTO audit_logs (user_id, action) VALUES ($1, $2)",
+                [req.user.id, `Imported user via CSV: ${user.email}`]
+            );
+
+            await pool.query('COMMIT');
+
+            // Send Magic Link Email
+            const resetLink = `http://localhost:3000/reset-password?token=${token}`;
+            try {
+                await transporter.sendMail({
+                    from: `"E-flow Admin" <${process.env.FROM_EMAIL}>`,
+                    to: user.email,
+                    subject: 'Welcome to E-flow - Account Setup Required',
+                    html: `
+                        <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eaeaea; border-radius: 8px; max-width: 500px;">
+                            <h2 style="color: #4f46e5;">Welcome to E-flow!</h2>
+                            <p>Hello ${user.name},</p>
+                            <p>An administrator has created an account for you in the E-flow document management system.</p>
+                            <p>To activate your account, you must set a secure password. Please click the button below to complete your setup. This link will expire in <strong>24 hours</strong>.</p>
+                            <a href="${resetLink}" style="display:inline-block;margin:16px 0;padding:12px 24px;background:#4f46e5;color:#fff;border-radius:6px;font-weight:bold;text-decoration:none;">Set My Password</a>
+                            <p style="color:#6b7280;font-size:13px;margin-top:20px;">If you believe this was a mistake, please contact your administrator.</p>
+                        </div>
+                    `
+                });
+            } catch (emailErr) {
+                console.error(`Failed to send magic link to ${user.email}:`, emailErr);
+            }
+
+            imported.push(user.email);
+        } catch (err) {
+            await pool.query('ROLLBACK');
+            console.error(`Failed to import user ${user.email}:`, err);
+            failed.push(user.email);
+        }
+    }
+
+    res.status(200).json({ 
+        message: `Successfully imported ${imported.length} users.`,
+        imported,
+        failed
+    });
 });
 
 // ==========================================

@@ -17,6 +17,14 @@ const DocumentDetailsModal = ({ document, onClose }) => {
   const [isVerifying, setIsVerifying] = useState(false);
   const [isAttaching, setIsAttaching] = useState(false);
   const [toastMsg, setToastMsg] = useState({ type: '', text: '' });
+  
+  // Verification Links State
+  const [verificationLinks, setVerificationLinks] = useState([]);
+  const [showVerificationLinksSection, setShowVerificationLinksSection] = useState(false);
+  const [newLinkPurpose, setNewLinkPurpose] = useState('');
+  const [newLinkExpiryDays, setNewLinkExpiryDays] = useState('');
+  const [newLinkMaxUses, setNewLinkMaxUses] = useState('');
+  const [isGeneratingLink, setIsGeneratingLink] = useState(false);
 
   const showToast = (type, text) => {
     setToastMsg({ type, text });
@@ -38,16 +46,18 @@ const DocumentDetailsModal = ({ document, onClose }) => {
     const fetchHistory = async () => {
       if (!document) return; // Safe guard inside the hook
       try {
-        const [histRes, clearRes, attachRes, versionsRes] = await Promise.all([
+        const [histRes, clearRes, attachRes, versionsRes, vLinksRes] = await Promise.all([
           api.get(`/documents/${document.id}/history`),
           api.get(`/documents/${document.id}/clearances`).catch(() => ({ data: [] })),
           api.get(`/documents/${document.id}/attachments`).catch(() => ({ data: [] })),
-          api.get(`/documents/${document.id}/versions`).catch(() => ({ data: [] }))
+          api.get(`/documents/${document.id}/versions`).catch(() => ({ data: [] })),
+          api.get(`/documents/${document.id}/verification-links`).catch(() => ({ data: [] }))
         ]);
         setHistory(histRes.data);
         setClearances(clearRes.data);
         setAttachments(attachRes.data);
         setVersions(versionsRes.data);
+        setVerificationLinks(vLinksRes.data || []);
       } catch (error) {
         console.error('Failed to fetch history:', error);
       } finally {
@@ -403,6 +413,141 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                         {isAttaching ? 'Uploading...' : 'Upload Attachment'}
                       </button>
                     </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Verification Links Section (Only Submitter or Admin) */}
+            {(document.submitter_id === user?.id || isAdmin) && (
+              <div className="flex flex-col mt-6 border-t pt-4">
+                <div className="flex justify-between items-center mb-3 border-b pb-2">
+                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider flex items-center gap-2">
+                    <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                    Public Verification Links
+                  </h3>
+                  <button 
+                    onClick={() => setShowVerificationLinksSection(!showVerificationLinksSection)}
+                    className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                  >
+                    {showVerificationLinksSection ? 'Hide' : 'Manage Links'}
+                  </button>
+                </div>
+
+                {showVerificationLinksSection && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-4">
+                    <h4 className="text-xs font-bold text-gray-800 mb-2 uppercase">Generate New Link</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+                      <input 
+                        type="text" 
+                        placeholder="Purpose (e.g., HR Verification)" 
+                        value={newLinkPurpose} 
+                        onChange={e => setNewLinkPurpose(e.target.value)} 
+                        className="p-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                      <input 
+                        type="number" 
+                        placeholder="Expires in days (optional)" 
+                        value={newLinkExpiryDays} 
+                        onChange={e => setNewLinkExpiryDays(e.target.value)} 
+                        className="p-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                      <input 
+                        type="number" 
+                        placeholder="Max uses (optional)" 
+                        value={newLinkMaxUses} 
+                        onChange={e => setNewLinkMaxUses(e.target.value)} 
+                        className="p-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                    </div>
+                    <button 
+                      onClick={async () => {
+                        setIsGeneratingLink(true);
+                        try {
+                          await api.post(`/documents/${document.id}/verification-link`, {
+                            purpose: newLinkPurpose,
+                            expires_in_days: newLinkExpiryDays,
+                            max_uses: newLinkMaxUses
+                          });
+                          showToast('success', 'Verification link generated!');
+                          setNewLinkPurpose('');
+                          setNewLinkExpiryDays('');
+                          setNewLinkMaxUses('');
+                          
+                          // Refresh links
+                          const vRes = await api.get(`/documents/${document.id}/verification-links`);
+                          setVerificationLinks(vRes.data);
+                        } catch (err) {
+                          showToast('error', err.response?.data?.message || 'Failed to generate link');
+                        } finally {
+                          setIsGeneratingLink(false);
+                        }
+                      }}
+                      disabled={isGeneratingLink}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-bold shadow-sm transition-colors disabled:opacity-50"
+                    >
+                      {isGeneratingLink ? 'Generating...' : 'Generate Magic Link'}
+                    </button>
+
+                    {verificationLinks.length > 0 && (
+                      <div className="mt-6">
+                        <h4 className="text-xs font-bold text-gray-600 mb-2 uppercase border-b pb-1">Active Links</h4>
+                        <div className="space-y-3">
+                          {verificationLinks.map(link => (
+                            <div key={link.id} className={`p-3 rounded-lg border ${link.is_revoked ? 'bg-red-50 border-red-200 opacity-70' : 'bg-white border-gray-200 shadow-sm'}`}>
+                              <div className="flex justify-between items-start mb-2">
+                                <div>
+                                  <span className="text-sm font-bold text-gray-800 block">{link.purpose || 'No Purpose Specified'}</span>
+                                  <span className="text-[10px] text-gray-500 font-mono mt-1 block">Created: {new Date(link.created_at).toLocaleString()}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-bold text-gray-600 bg-gray-100 px-2 py-1 rounded">Uses: {link.access_count} / {link.max_uses || '∞'}</span>
+                                  {!link.is_revoked && (
+                                    <button 
+                                      onClick={async () => {
+                                        if(window.confirm('Revoke this link? It will no longer work.')) {
+                                          try {
+                                            await api.patch(`/verification-links/${link.id}/revoke`);
+                                            const vRes = await api.get(`/documents/${document.id}/verification-links`);
+                                            setVerificationLinks(vRes.data);
+                                            showToast('success', 'Link revoked.');
+                                          } catch(e) {
+                                            showToast('error', 'Failed to revoke link.');
+                                          }
+                                        }
+                                      }}
+                                      className="text-xs bg-red-100 text-red-700 hover:bg-red-200 px-2 py-1 rounded font-bold transition-colors"
+                                    >
+                                      Revoke
+                                    </button>
+                                  )}
+                                  {link.is_revoked && <span className="text-xs font-bold text-red-700 bg-red-100 px-2 py-1 rounded">Revoked</span>}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <input 
+                                  readOnly 
+                                  value={link.url} 
+                                  className={`flex-grow p-1.5 text-[11px] font-mono border rounded outline-none ${link.is_revoked ? 'bg-red-50 border-red-200 text-red-500' : 'bg-gray-50 border-gray-300 text-gray-700'}`}
+                                />
+                                {!link.is_revoked && (
+                                  <button 
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(link.url);
+                                      showToast('success', 'Copied to clipboard!');
+                                    }}
+                                    className="bg-gray-200 hover:bg-gray-300 text-gray-800 p-1.5 rounded transition-colors"
+                                    title="Copy to clipboard"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

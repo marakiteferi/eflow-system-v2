@@ -385,6 +385,82 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 });
 
+// GET: Public Verification Endpoint
+router.get('/verify-link/:token', async (req, res) => {
+    const token = req.params.token;
+    try {
+        const linkQuery = await pool.query(
+            'SELECT * FROM document_verification_links WHERE token = $1',
+            [token]
+        );
+        if (linkQuery.rows.length === 0) return res.status(404).json({ message: 'Invalid or expired verification link.' });
+        
+        const link = linkQuery.rows[0];
+
+        if (link.is_revoked) {
+            return res.status(403).json({ message: 'This verification link has been revoked by the issuer.' });
+        }
+        if (link.expires_at && new Date() > new Date(link.expires_at)) {
+            return res.status(403).json({ message: 'This verification link has expired.' });
+        }
+        if (link.max_uses && link.access_count >= link.max_uses) {
+            return res.status(403).json({ message: 'This verification link has reached its maximum number of uses.' });
+        }
+
+        // Increment access count
+        await pool.query('UPDATE document_verification_links SET access_count = access_count + 1 WHERE id = $1', [link.id]);
+        await pool.query(
+            "INSERT INTO audit_logs (document_id, action) VALUES ($1, 'Verification link accessed publicly')",
+            [link.document_id]
+        );
+
+        // Fetch limited, non-PII data
+        const docQuery = await pool.query(
+            'SELECT title, status, created_at, updated_at, file_path FROM documents WHERE id = $1',
+            [link.document_id]
+        );
+        if (docQuery.rows.length === 0) return res.status(404).json({ message: 'Document not found.' });
+
+        const doc = docQuery.rows[0];
+
+        // Fetch approval chain metadata (anonymized roles)
+        const approvalsQuery = await pool.query(
+            `SELECT a.status, a.created_at, a.document_hash, dr.name as role_name 
+             FROM approvals a 
+             JOIN users u ON a.approver_id = u.id 
+             LEFT JOIN dynamic_roles dr ON u.role_id = dr.id
+             WHERE a.document_id = $1 ORDER BY a.created_at ASC`,
+            [link.document_id]
+        );
+
+        // Current file hash
+        let currentHash = null;
+        try {
+            currentHash = crypto.createHash('sha256').update(fs.readFileSync(doc.file_path)).digest('hex');
+        } catch (e) {
+            console.error('File read error:', e);
+        }
+
+        res.status(200).json({
+            title: doc.title,
+            status: doc.status,
+            submission_date: doc.created_at,
+            final_approval_date: doc.status === 'Approved' ? doc.updated_at : null,
+            stages_count: approvalsQuery.rows.length,
+            approvals: approvalsQuery.rows.map(a => ({
+                role: a.role_name || 'System Role',
+                status: a.status,
+                timestamp: a.created_at
+            })),
+            document_hash: currentHash,
+            purpose: link.purpose
+        });
+    } catch (err) {
+        console.error('Error verifying link:', err);
+        res.status(500).json({ message: 'Server error verifying link' });
+    }
+});
+
 // 5. PATCH: Set metadata tag on a document (for staff to trigger condition nodes)
 router.patch('/:id/tag', authenticateToken, async (req, res) => {
     const { tag } = req.body;
@@ -448,14 +524,22 @@ router.post('/:id/attachments', authenticateToken, (req, res, next) => upload.si
             return res.status(403).json({ message: 'Only the current assignee can attach files.' });
         }
 
+        // GENERATE HASH AND HMAC SIGNATURE
+        const fileBuffer = fs.readFileSync(req.file.path);
+        const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+        const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET || 'default_secret';
+        const signatureTimestamp = new Date().toISOString();
+        const dataToSign = `${fileHash}|${req.user.id}|${signatureTimestamp}`;
+        const attachmentSignature = crypto.createHmac('sha256', SIGNING_SECRET).update(dataToSign).digest('hex');
+
         await pool.query(
-            'INSERT INTO document_attachments (document_id, uploaded_by, file_path, file_name, description) VALUES ($1,$2,$3,$4,$5)',
-            [documentId, req.user.id, req.file.path, req.file.originalname, description || null]
+            'INSERT INTO document_attachments (document_id, uploaded_by, file_path, file_name, description, file_hash, attachment_signature) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+            [documentId, req.user.id, req.file.path, req.file.originalname, description || null, fileHash, attachmentSignature]
         );
 
         await pool.query(
             "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1,$2,$3)",
-            [documentId, req.user.id, `Attached file: ${req.file.originalname}`]
+            [documentId, req.user.id, `Attached file: ${req.file.originalname} (Secured via HMAC)`]
         );
 
         res.status(201).json({ message: 'File attached successfully.' });
@@ -542,6 +626,100 @@ router.get('/:id/verify-chain', authenticateToken, async (req, res) => {
     } catch (err) {
         console.error('Error verifying chain:', err);
         res.status(500).json({ message: 'Server error verifying chain.' });
+    }
+});
+
+// POST: Generate a new verification link
+router.post('/:id/verification-link', authenticateToken, async (req, res) => {
+    const documentId = req.params.id;
+    const { purpose, expires_in_days, max_uses } = req.body;
+
+    try {
+        // Verify submitter
+        const docQuery = await pool.query('SELECT submitter_id FROM documents WHERE id = $1', [documentId]);
+        if (docQuery.rows.length === 0) return res.status(404).json({ message: 'Document not found' });
+        
+        if (docQuery.rows[0].submitter_id !== req.user.id && req.user.role_id !== 3) {
+            return res.status(403).json({ message: 'Only the submitter can generate verification links.' });
+        }
+
+        const token = crypto.randomBytes(32).toString('hex');
+        let expiresAt = null;
+        if (expires_in_days) {
+            expiresAt = new Date(Date.now() + parseInt(expires_in_days) * 24 * 60 * 60 * 1000);
+        }
+
+        await pool.query(
+            'INSERT INTO document_verification_links (document_id, token, purpose, expires_at, max_uses, created_by) VALUES ($1, $2, $3, $4, $5, $6)',
+            [documentId, token, purpose || null, expiresAt, max_uses ? parseInt(max_uses) : null, req.user.id]
+        );
+
+        await pool.query(
+            "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Generated verification link')",
+            [documentId, req.user.id]
+        );
+
+        res.status(201).json({ 
+            message: 'Verification link generated',
+            link: `http://localhost:3000/verify/${token}`
+        });
+    } catch (err) {
+        console.error('Error generating verification link:', err);
+        res.status(500).json({ message: 'Server error generating link' });
+    }
+});
+
+// GET: Fetch all verification links for a document
+router.get('/:id/verification-links', authenticateToken, async (req, res) => {
+    const documentId = req.params.id;
+    try {
+        const docQuery = await pool.query('SELECT submitter_id FROM documents WHERE id = $1', [documentId]);
+        if (docQuery.rows.length === 0) return res.status(404).json({ message: 'Document not found' });
+        
+        if (docQuery.rows[0].submitter_id !== req.user.id && req.user.role_id !== 3) {
+            return res.status(403).json({ message: 'Not authorized.' });
+        }
+
+        const links = await pool.query(
+            'SELECT id, token, purpose, expires_at, max_uses, access_count, is_revoked, created_at FROM document_verification_links WHERE document_id = $1 ORDER BY created_at DESC',
+            [documentId]
+        );
+        
+        // Add full URL for convenience
+        const mappedLinks = links.rows.map(l => ({
+            ...l,
+            url: `http://localhost:3000/verify/${l.token}`
+        }));
+
+        res.status(200).json(mappedLinks);
+    } catch (err) {
+        console.error('Error fetching verification links:', err);
+        res.status(500).json({ message: 'Server error fetching links' });
+    }
+});
+
+// PATCH: Revoke a verification link
+router.patch('/verification-links/:id/revoke', authenticateToken, async (req, res) => {
+    const linkId = req.params.id;
+    try {
+        const linkQuery = await pool.query('SELECT document_id, created_by FROM document_verification_links WHERE id = $1', [linkId]);
+        if (linkQuery.rows.length === 0) return res.status(404).json({ message: 'Link not found' });
+        
+        if (linkQuery.rows[0].created_by !== req.user.id && req.user.role_id !== 3) {
+            return res.status(403).json({ message: 'Not authorized to revoke this link.' });
+        }
+
+        await pool.query('UPDATE document_verification_links SET is_revoked = TRUE WHERE id = $1', [linkId]);
+        
+        await pool.query(
+            "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Revoked verification link')",
+            [linkQuery.rows[0].document_id, req.user.id]
+        );
+
+        res.status(200).json({ message: 'Link revoked successfully' });
+    } catch (err) {
+        console.error('Error revoking verification link:', err);
+        res.status(500).json({ message: 'Server error revoking link' });
     }
 });
 
