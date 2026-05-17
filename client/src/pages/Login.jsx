@@ -1,7 +1,7 @@
 import { useState, useContext } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
-import { AuthContext } from '../context/AuthContext'; // Import the context
+import { AuthContext } from '../context/AuthContext';
 
 const Login = () => {
   const [email, setEmail] = useState('');
@@ -82,6 +82,14 @@ const Login = () => {
             >
               Sign in
             </button>
+          </div>
+          <div className="text-center">
+            <Link
+              to="/forgot-password"
+              className="text-sm text-blue-600 hover:text-blue-800 font-medium hover:underline"
+            >
+              Forgot your password?
+            </Link>
           </div>
         </form>
       </div>

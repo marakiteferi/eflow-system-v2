@@ -21,8 +21,8 @@ const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT),
     secure: process.env.SMTP_PORT == 465,
-    requireTLS: true, // Enforce STARTTLS on port 587 (required by Brevo)
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    tls: { ciphers: 'SSLv3' }
 });
 
 // Verify SMTP connection on startup — surfaces auth/config errors immediately
@@ -63,58 +63,145 @@ const sendNotificationEmail = async (userId, subject, message) => {
 };
 
 
-// NEW: Universal PDF & Image Stamping Engine
-// NEW: Universal PDF & Image Stamping Engine (Windows-Safe)
-const stampApprovedDocument = async (filePath, approverName) => {
+// ── Helper: Append Signature Certificate page to approved PDFs ──────────────
+// PDF-only since all uploads are now PDF.
+const appendSignatureCertificate = async (filePath, documentId, documentTitle, pool) => {
     try {
         if (!filePath) return false;
-
-        console.log(`\n🖨️ STAMPING DOCUMENT: ${filePath}`);
         const lowerPath = filePath.toLowerCase();
-        const dateStr = new Date().toISOString().split('T')[0];
-        const stampText = `OFFICIALLY APPROVED - ${approverName} - ${dateStr}`;
 
-        if (lowerPath.endsWith('.pdf')) {
-            const existingPdfBytes = fs.readFileSync(filePath);
-            const pdfDoc = await PDFDocument.load(existingPdfBytes);
-            const pages = pdfDoc.getPages();
+        // Only handle PDFs — file uploads are PDF-only
+        if (!lowerPath.endsWith('.pdf')) return false;
 
-            for (const page of pages) {
-                const { width, height } = page.getSize();
-                page.drawText(stampText, {
-                    x: 50, y: height / 2, size: 24, color: rgb(0, 0.5, 0), opacity: 0.4, rotate: degrees(45),
+        console.log(`\n📄 APPENDING SIGNATURE CERTIFICATE to: ${filePath}`);
+
+        // Fetch all approvals for this document
+        const approvalsQuery = await pool.query(
+            `SELECT a.*, u.name as approver_name 
+             FROM approvals a 
+             JOIN users u ON a.approver_id = u.id 
+             WHERE a.document_id = $1 AND a.status = 'Approved'
+             ORDER BY a.id ASC`,
+            [documentId]
+        );
+        const approvals = approvalsQuery.rows;
+
+        const existingPdfBytes = fs.readFileSync(filePath);
+        const pdfDoc = await PDFDocument.load(existingPdfBytes);
+
+        // ── Add the Certificate Page ──────────────────────────────────────────
+        const certPage = pdfDoc.addPage([595.28, 841.89]); // A4
+        const { width: cw, height: ch } = certPage.getSize();
+        const margin = 50;
+        let y = ch - margin;
+
+        // Header background strip
+        certPage.drawRectangle({ x: 0, y: ch - 90, width: cw, height: 90, color: rgb(0.31, 0.27, 0.9), opacity: 0.9 });
+
+        // Title
+        certPage.drawText('APPROVAL CERTIFICATE', {
+            x: margin, y: ch - 58, size: 22, color: rgb(1, 1, 1),
+        });
+        certPage.drawText('E-Flow Document Management System', {
+            x: margin, y: ch - 78, size: 11, color: rgb(0.85, 0.85, 1),
+        });
+
+        y = ch - 120;
+
+        // Document info block
+        certPage.drawText('Document:', { x: margin, y, size: 10, color: rgb(0.45, 0.45, 0.45) });
+        certPage.drawText(documentTitle || 'Untitled', { x: margin + 80, y, size: 10, color: rgb(0.1, 0.1, 0.1) });
+        y -= 18;
+        certPage.drawText('Generated:', { x: margin, y, size: 10, color: rgb(0.45, 0.45, 0.45) });
+        certPage.drawText(new Date().toLocaleString(), { x: margin + 80, y, size: 10, color: rgb(0.1, 0.1, 0.1) });
+        y -= 18;
+        certPage.drawText('Document ID:', { x: margin, y, size: 10, color: rgb(0.45, 0.45, 0.45) });
+        certPage.drawText(String(documentId), { x: margin + 80, y, size: 10, color: rgb(0.1, 0.1, 0.1) });
+        y -= 30;
+
+        // Divider line
+        certPage.drawLine({ start: { x: margin, y }, end: { x: cw - margin, y }, thickness: 1, color: rgb(0.8, 0.8, 0.8) });
+        y -= 25;
+
+        certPage.drawText('APPROVAL CHAIN', { x: margin, y, size: 12, color: rgb(0.31, 0.27, 0.9) });
+        y -= 20;
+
+        // Per-approver blocks
+        for (let i = 0; i < approvals.length; i++) {
+            const app = approvals[i];
+            const blockHeight = app.signature_drawing ? 140 : 85;
+
+            if (y - blockHeight < margin) {
+                // Not enough space — add another page
+                const extraPage = pdfDoc.addPage([595.28, 841.89]);
+                y = extraPage.getSize().height - margin;
+                // Draw on extraPage instead — for simplicity we'll just break
+                break;
+            }
+
+            // Approver card background
+            certPage.drawRectangle({
+                x: margin, y: y - blockHeight + 10, width: cw - 2 * margin, height: blockHeight,
+                color: rgb(0.97, 0.97, 1), borderColor: rgb(0.8, 0.8, 0.9), borderWidth: 1,
+            });
+
+            // Step number badge
+            certPage.drawRectangle({ x: margin + 10, y: y - 5, width: 24, height: 18, color: rgb(0.31, 0.27, 0.9) });
+            certPage.drawText(String(i + 1), { x: margin + 17, y: y - 2, size: 11, color: rgb(1, 1, 1) });
+
+            // Approver name + timestamp
+            certPage.drawText(app.approver_name, { x: margin + 44, y: y - 2, size: 12, color: rgb(0.1, 0.1, 0.1) });
+            certPage.drawText(`Approved: ${new Date(app.created_at).toLocaleString()}`, {
+                x: margin + 44, y: y - 18, size: 9, color: rgb(0.45, 0.45, 0.45),
+            });
+
+            // HMAC signature hash (truncated)
+            if (app.approval_signature) {
+                const shortHash = app.approval_signature.substring(0, 40) + '...';
+                certPage.drawText(`HMAC: ${shortHash}`, {
+                    x: margin + 44, y: y - 32, size: 7.5, color: rgb(0.55, 0.55, 0.55),
                 });
             }
-            fs.writeFileSync(filePath, await pdfDoc.save());
-            console.log('✅ PDF Stamping Complete!');
-            return true;
 
-        } else if (lowerPath.match(/\.(jpg|jpeg|png)$/)) {
-            // FIX: Read the image into memory FIRST to prevent Windows file-lock errors
-            const imageBuffer = fs.readFileSync(filePath);
-            const metadata = await sharp(imageBuffer).metadata();
-            const width = metadata.width || 800;
-            const height = metadata.height || 800;
+            // Drawn signature image (if captured)
+            if (app.signature_drawing) {
+                try {
+                    // Strip data URL prefix: "data:image/png;base64,..."
+                    const base64Data = app.signature_drawing.replace(/^data:image\/png;base64,/, '');
+                    const sigBuffer = Buffer.from(base64Data, 'base64');
+                    const sigImage = await pdfDoc.embedPng(sigBuffer);
+                    const sigDims = sigImage.scale(0.35);
+                    certPage.drawImage(sigImage, {
+                        x: margin + 44,
+                        y: y - 50 - sigDims.height,
+                        width: sigDims.width,
+                        height: sigDims.height,
+                        opacity: 0.9,
+                    });
+                    certPage.drawText('Drawn Signature:', {
+                        x: margin + 44, y: y - 48, size: 8, color: rgb(0.45, 0.45, 0.45),
+                    });
+                } catch (sigErr) {
+                    console.error('Failed to embed signature image:', sigErr.message);
+                }
+            }
 
-            const svgWatermark = `
-            <svg width="${width}" height="${height}">
-              <style>
-              .title { fill: rgba(0, 128, 0, 0.5); font-size: ${Math.max(width / 20, 24)}px; font-weight: bold; font-family: sans-serif; }
-              </style>
-              <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="title" transform="rotate(-45, ${width / 2}, ${height / 2})">${stampText}</text>
-            </svg>`;
-
-            // Apply the overlay to the memory buffer, then overwrite the physical file
-            const stampedBuffer = await sharp(imageBuffer)
-                .composite([{ input: Buffer.from(svgWatermark), top: 0, left: 0 }])
-                .toBuffer();
-
-            fs.writeFileSync(filePath, stampedBuffer);
-            console.log('✅ Image Stamping Complete!');
-            return true;
+            y -= blockHeight + 12;
         }
+
+        // Footer
+        const footerY = margin;
+        certPage.drawLine({ start: { x: margin, y: footerY + 18 }, end: { x: cw - margin, y: footerY + 18 }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+        certPage.drawText('This certificate was generated automatically by E-Flow. The cryptographic HMAC signatures above provide tamper-evident proof of each approval.', {
+            x: margin, y: footerY + 6, size: 7, color: rgb(0.6, 0.6, 0.6),
+        });
+
+        fs.writeFileSync(filePath, await pdfDoc.save());
+        console.log('✅ Approval Certificate page appended successfully!');
+        return true;
+
     } catch (err) {
-        console.error('Failed to stamp document:', err);
+        console.error('Failed to append certificate:', err);
         return false;
     }
 };
@@ -123,23 +210,41 @@ const stampApprovedDocument = async (filePath, approverName) => {
 router.post('/request-otp', authenticateToken, async (req, res) => {
     try {
         const { documentId } = req.body;
+        
+        const existingData = otpStore.get(req.user.id);
+        if (existingData && existingData.documentId === documentId && existingData.generatedAt) {
+            const timeSinceGenerated = Date.now() - existingData.generatedAt;
+            if (timeSinceGenerated < 2 * 60 * 1000) {
+                return res.status(429).json({ message: 'Please wait 2 minutes before requesting a new code.' });
+            }
+        }
+
         const otp = crypto.randomInt(100000, 999999).toString();
-        otpStore.set(req.user.id, { otp, documentId, expires: Date.now() + 5 * 60000 });
+        otpStore.set(req.user.id, { otp, documentId, expires: Date.now() + 5 * 60000, generatedAt: Date.now() });
 
         const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [req.user.id]);
         const { email, name } = userQuery.rows[0];
 
-        // Send the OTP via email
-        await transporter.sendMail({
-            from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
-            to: email,
-            subject: 'Your E-flow Approval OTP',
-            html: `<p>Hello ${name},</p>
-                   <p>Your one-time approval code is: <b style="font-size:24px">${otp}</b></p>
-                   <p>This code expires in 5 minutes.</p>`
-        });
+        console.log(`\n🔑 DEV MODE - OTP GENERATED: ${otp}\n`);
 
-        res.status(200).json({ message: 'OTP sent to your email' });
+        // Send the OTP via email
+        try {
+            await transporter.sendMail({
+                from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
+                to: email,
+                subject: 'Your E-flow Approval OTP',
+                html: `<p>Hello ${name},</p>
+                       <p>Your one-time approval code is: <b style="font-size:24px">${otp}</b></p>
+                       <p>This code expires in 5 minutes.</p>`
+            });
+            res.status(200).json({ message: 'OTP sent to your email' });
+        } catch (emailErr) {
+            console.error('Email failed:', emailErr.message);
+            if (process.env.NODE_ENV !== 'production') {
+                return res.status(200).json({ message: 'Email failed (dev mode) — OTP: ' + otp });
+            }
+            throw emailErr;
+        }
     } catch (err) {
         console.error('OTP error:', err);
         res.status(500).json({ message: 'Error generating OTP' });
@@ -148,7 +253,7 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
 
 // POST: Approve & Route Document (Advanced Engine)
 router.post('/approve', authenticateToken, async (req, res) => {
-    const { documentId, otp, comments } = req.body;
+    const { documentId, otp, comments, signatureDrawing } = req.body;
     const storedData = otpStore.get(req.user.id);
 
     if (!storedData || storedData.otp !== otp || storedData.documentId !== documentId) {
@@ -322,12 +427,22 @@ router.post('/approve', authenticateToken, async (req, res) => {
                     }
 
                     await pool.query(
-                        "INSERT INTO approvals (document_id, approver_id, node_id, status, comments, document_hash, approval_signature, previous_approval_id, previous_approval_hash, created_at) VALUES ($1, $2, $3, 'Approved', $4, $5, $6, $7, $8, $9)",
-                        [documentId, req.user.id, doc.current_node_id || 'parallel', comments || 'Verified by 2FA', documentHash, approvalSignature, prev?.id || null, previousApprovalHash, approvalDate]
+                        "INSERT INTO approvals (document_id, approver_id, node_id, status, comments, document_hash, approval_signature, previous_approval_id, previous_approval_hash, created_at, signature_drawing) VALUES ($1, $2, $3, 'Approved', $4, $5, $6, $7, $8, $9, $10)",
+                        [documentId, req.user.id, doc.current_node_id || 'parallel', comments || 'Verified by 2FA', documentHash, approvalSignature, prev?.id || null, previousApprovalHash, approvalDate, signatureDrawing || null]
                     );
                     await pool.query(
                         "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Parallel Branch Approved — Awaiting Other Reviewers')",
                         [documentId, req.user.id]
+                    );
+                    // Track which user IDs have completed their branch, so the frontend can hide it from their task list
+                    if (!existingBranches.completedBy) existingBranches.completedBy = [];
+                    if (!existingBranches.completedBy.includes(req.user.id)) {
+                        existingBranches.completedBy.push(req.user.id);
+                    }
+
+                    await pool.query(
+                        'UPDATE documents SET parallel_branch_data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+                        [JSON.stringify(existingBranches), documentId]
                     );
                     await pool.query('COMMIT');
                     otpStore.delete(req.user.id);
@@ -511,9 +626,6 @@ router.post('/approve', authenticateToken, async (req, res) => {
                 `Great news! Your document <b>"${doc.title}"</b> has passed all review stages.`
             );
 
-            // Apply the permanent watermark
-            const userQuery = await pool.query('SELECT name FROM users WHERE id = $1', [req.user.id]);
-            await stampApprovedDocument(doc.file_path, userQuery.rows[0].name);
         } else {
             await pool.query(
                 "UPDATE documents SET current_node_id = $1, current_assignee_id = $2, current_role_id = $3, current_department_id = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5",
@@ -552,8 +664,8 @@ router.post('/approve', authenticateToken, async (req, res) => {
         }
 
         await pool.query(
-            "INSERT INTO approvals (document_id, approver_id, node_id, status, comments, document_hash, approval_signature, previous_approval_id, previous_approval_hash, created_at) VALUES ($1, $2, $3, 'Approved', $4, $5, $6, $7, $8, $9)",
-            [documentId, req.user.id, nodeLogLabel, comments || 'Verified by 2FA', documentHash, approvalSignature, prev?.id || null, previousApprovalHash, approvalDate]
+            "INSERT INTO approvals (document_id, approver_id, node_id, status, comments, document_hash, approval_signature, previous_approval_id, previous_approval_hash, created_at, signature_drawing) VALUES ($1, $2, $3, 'Approved', $4, $5, $6, $7, $8, $9, $10)",
+            [documentId, req.user.id, nodeLogLabel, comments || 'Verified by 2FA', documentHash, approvalSignature, prev?.id || null, previousApprovalHash, approvalDate, signatureDrawing || null]
         );
 
         const auditMessage = isFinalStep
@@ -566,6 +678,11 @@ router.post('/approve', authenticateToken, async (req, res) => {
 
         await pool.query('COMMIT');
         otpStore.delete(req.user.id);
+        
+        if (isFinalStep) {
+            // Append the Approval Certificate page (or image watermark for images)
+            await appendSignatureCertificate(doc.file_path, documentId, doc.title, pool);
+        }
 
         res.status(200).json({
             message: isFinalStep

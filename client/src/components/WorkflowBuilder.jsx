@@ -521,7 +521,13 @@ const WorkflowBuilderInner = () => {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [panelForceClosed, setPanelForceClosed] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
+  const [toast, setToast] = useState({ type: '', text: '' });
   const builderContainerRef = useRef(null);
+
+  const showToast = (type, text) => {
+    setToast({ type, text });
+    setTimeout(() => setToast({ type: '', text: '' }), 4000);
+  };
 
   const reactFlowWrapper = useRef(null);
   const { project } = useReactFlow();
@@ -660,7 +666,7 @@ const WorkflowBuilderInner = () => {
 
   const [isValidating, setIsValidating] = useState(false);
   const validateAndSave = async () => {
-    if (!workflowName) return alert('Enter a workflow name');
+    if (!workflowName) { showToast('error', 'Please enter a workflow name before saving.'); return; }
 
     // Validation
     const errors = [];
@@ -701,16 +707,16 @@ const WorkflowBuilderInner = () => {
 
       if (selectedWorkflowId) {
         await api.put(`/workflows/${selectedWorkflowId}`, { name: workflowName, flow_structure: flowData });
-        alert('Workflow updated successfully!');
+        showToast('success', 'Workflow updated successfully!');
       } else {
         await api.post('/workflows', { name: workflowName, flow_structure: flowData });
-        alert('New workflow created successfully!');
+        showToast('success', 'New workflow created successfully!');
       }
       // Re-fetch list
       const wfRes = await api.get('/workflows');
       setSavedWorkflows(wfRes.data);
     } catch (err) {
-      alert('Failed to save workflow');
+      showToast('error', 'Failed to save workflow. Please try again.');
     } finally {
       setIsValidating(false);
     }
@@ -726,7 +732,7 @@ const WorkflowBuilderInner = () => {
     if (!document.fullscreenElement) {
       if (builderContainerRef.current) {
         builderContainerRef.current.requestFullscreen().catch(err => {
-          alert(`Error attempting to enable full-screen mode: ${err.message}`);
+          showToast('error', `Could not enter full-screen: ${err.message}`);
         });
       }
       setIsFullScreen(true);
@@ -756,6 +762,15 @@ const WorkflowBuilderInner = () => {
 
   return (
     <div ref={builderContainerRef} className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-140px)] min-h-[700px] w-full">
+      {/* Toast Notification */}
+      {toast.text && (
+        <div className="fixed top-6 right-6 z-[80]">
+          <div className={`px-6 py-4 rounded-xl shadow-2xl border-l-4 font-semibold text-sm flex items-center gap-3 ${toast.type === 'error' ? 'bg-white border-red-500 text-red-700' : 'bg-white border-green-500 text-green-700'}`}>
+            <span className="text-xl">{toast.type === 'error' ? '🚨' : '✅'}</span>
+            {toast.text}
+          </div>
+        </div>
+      )}
 
       {/* TOP BAR */}
       <div className="flex px-4 py-3 border-b border-gray-200 bg-white items-center gap-4 z-10 shrink-0 flex-wrap">

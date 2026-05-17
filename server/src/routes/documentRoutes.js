@@ -16,7 +16,27 @@ const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'uploads/'),
     filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
-const upload = multer({ storage });
+
+const pdfOnlyFilter = (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') {
+        cb(null, true);
+    } else {
+        cb(new Error('INVALID_FILE_TYPE'), false);
+    }
+};
+
+const upload = multer({ storage, fileFilter: pdfOnlyFilter, limits: { fileSize: 10 * 1024 * 1024 } });
+
+// Error handler for multer
+const handleMulterError = (err, req, res, next) => {
+    if (err && err.message === 'INVALID_FILE_TYPE') {
+        return res.status(400).json({ message: 'Only PDF files are accepted.' });
+    }
+    if (err && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ message: 'File is too large. Maximum size is 10 MB.' });
+    }
+    next(err);
+};
 
 const extractText = async (filePath, mimetype) => {
     try {
@@ -63,7 +83,10 @@ const resolveAssignee = async (dbPool, initialId) => {
 };
 
 // 1. POST: Upload document
-router.post('/upload', authenticateToken, upload.single('document'), async (req, res) => {
+router.post('/upload', authenticateToken, (req, res, next) => upload.single('document')(req, res, (err) => {
+    if (err) return handleMulterError(err, req, res, next);
+    next();
+}), async (req, res) => {
     try {
         const { title, workflow_id, metadata_tag } = req.body;
         const submitter_id = req.user.id;
@@ -210,6 +233,33 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
 
         const extracted_text = await extractText(req.file.path, req.file.mimetype);
 
+        // ── VERSION HISTORY: Save old snapshot before overwriting ──────────────
+        const currentDocQuery = await pool.query(
+            'SELECT file_path, extracted_text FROM documents WHERE id = $1',
+            [documentId]
+        );
+        const currentDoc = currentDocQuery.rows[0];
+
+        // Get version count to calculate next version number (the one we're archiving is the current version)
+        const versionCountQuery = await pool.query(
+            'SELECT COUNT(*) FROM document_versions WHERE document_id = $1',
+            [documentId]
+        );
+        const nextVersionNumber = parseInt(versionCountQuery.rows[0].count) + 1;
+
+        // Get the latest rejection reason for this document
+        const rejectionQuery = await pool.query(
+            "SELECT comments FROM approvals WHERE document_id = $1 AND status = 'Rejected' ORDER BY id DESC LIMIT 1",
+            [documentId]
+        );
+        const rejectionReason = rejectionQuery.rows[0]?.comments || null;
+
+        await pool.query(
+            'INSERT INTO document_versions (document_id, version_number, file_path, extracted_text, rejection_reason, submitted_by) VALUES ($1, $2, $3, $4, $5, $6)',
+            [documentId, nextVersionNumber, currentDoc.file_path, currentDoc.extracted_text, rejectionReason, req.user.id]
+        );
+        // ── END VERSION HISTORY ────────────────────────────────────────────────
+
         await pool.query(
             `UPDATE documents SET file_path = $1, extracted_text = $2, status = 'Pending',
              current_node_id = $3, current_assignee_id = $4, current_role_id = $5, current_department_id = $6,
@@ -223,6 +273,24 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error during resubmission' });
+    }
+});
+
+// 2b. GET: Fetch version history for a document
+router.get('/:id/versions', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT dv.*, u.name as submitted_by_name
+             FROM document_versions dv
+             LEFT JOIN users u ON dv.submitted_by = u.id
+             WHERE dv.document_id = $1
+             ORDER BY dv.version_number ASC`,
+            [req.params.id]
+        );
+        res.status(200).json(result.rows);
+    } catch (err) {
+        console.error('Error fetching versions:', err);
+        res.status(500).json({ message: 'Server error fetching version history.' });
     }
 });
 
@@ -359,7 +427,10 @@ router.patch('/:id/tag', authenticateToken, async (req, res) => {
 });
 
 // POST: Approver attaches a supporting file to a document
-router.post('/:id/attachments', authenticateToken, upload.single('file'), async (req, res) => {
+router.post('/:id/attachments', authenticateToken, (req, res, next) => upload.single('file')(req, res, (err) => {
+    if (err) return handleMulterError(err, req, res, next);
+    next();
+}), async (req, res) => {
     const documentId = req.params.id;
     const { description } = req.body;
 

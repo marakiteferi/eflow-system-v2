@@ -301,7 +301,7 @@ const StudentPortal = () => {
                 />
             </div>
             <div className="flex items-center gap-3 ml-auto">
-                <button className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">🌙</button>
+                <button onClick={() => window.document.documentElement.classList.toggle('dark-theme')} className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">🌙</button>
                 <button
                     onClick={() => setActiveView('notifications')}
                     className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors relative"
