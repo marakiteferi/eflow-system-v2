@@ -70,8 +70,8 @@ const DocumentUpload = ({ onUploadSuccess }) => {
 
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Upload File (Image or PDF)</label>
-          <input type="file" accept="image/*,.pdf" onChange={handleFileChange} className="w-full px-3 py-2 border border-gray-300 rounded-md file:mr-4 file:bg-indigo-50 file:text-indigo-700 file:border-0 file:px-4 file:py-2 file:rounded hover:file:bg-indigo-100 cursor-pointer" />
+          <label className="block text-sm font-medium text-gray-700 mb-1">Upload File <span className="text-gray-400 font-normal">(PDF only, max 10 MB)</span></label>
+          <input type="file" accept=".pdf,application/pdf" onChange={handleFileChange} className="w-full px-3 py-2 border border-gray-300 rounded-md file:mr-4 file:bg-indigo-50 file:text-indigo-700 file:border-0 file:px-4 file:py-2 file:rounded hover:file:bg-indigo-100 cursor-pointer" />
         </div>
 
         <div>

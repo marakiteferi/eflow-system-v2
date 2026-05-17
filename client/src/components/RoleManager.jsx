@@ -1,11 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../api';
 
+const RoleManagerToast = ({ toast }) => {
+  if (!toast.text) return null;
+  return (
+    <div className="fixed top-6 right-6 z-[80]">
+      <div className={`px-6 py-4 rounded-xl shadow-2xl border-l-4 font-semibold text-sm flex items-center gap-3 ${toast.type === 'error' ? 'bg-white border-red-500 text-red-700' : 'bg-white border-green-500 text-green-700'}`}>
+        <span className="text-xl">{toast.type === 'error' ? '🚨' : '✅'}</span>
+        {toast.text}
+      </div>
+    </div>
+  );
+};
+
 // =============================================
 // Pitfall 1 & 2 FIX: Impact Report Modal
 // Shows affected entities before sealing a role.
 // =============================================
-const ImpactReportModal = ({ role, onClose, onConfirmSeal }) => {
+const ImpactReportModal = ({ role, onClose, onConfirmSeal, showToast }) => {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -15,14 +27,14 @@ const ImpactReportModal = ({ role, onClose, onConfirmSeal }) => {
         const res = await api.get(`/admin/roles/${role.id}/impact`);
         setReport(res.data);
       } catch (err) {
-        alert('Failed to load impact report.');
+        showToast('error', 'Failed to load impact report.');
         onClose();
       } finally {
         setLoading(false);
       }
     };
     fetchReport();
-  }, [role.id, onClose]);
+  }, [role.id, onClose, showToast]);
 
   const canSeal = report && report.in_flight_documents === 0;
 
@@ -134,6 +146,12 @@ const RoleManager = () => {
 
   // Pitfall 1 & 2: Impact modal state
   const [impactTarget, setImpactTarget] = useState(null);
+  const [toast, setToast] = useState({ type: '', text: '' });
+
+  const showToast = (type, text) => {
+    setToast({ type, text });
+    setTimeout(() => setToast({ type: '', text: '' }), 4000);
+  };
 
   const fetchData = useCallback(async () => {
     try {
@@ -158,22 +176,23 @@ const RoleManager = () => {
       setNewDeptName('');
       fetchData();
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to create department');
+      showToast('error', err.response?.data?.message || 'Failed to create department');
     }
   };
 
   const handleCreateRole = async (e) => {
     e.preventDefault();
-    if (!newRole.name.trim()) return alert('Role name is required');
+    if (!newRole.name.trim()) { showToast('error', 'Role name is required.'); return; }
     try {
       await api.post('/admin/roles', {
         ...newRole,
         department_id: newRole.department_id === '' ? null : newRole.department_id,
       });
       setNewRole({ name: '', department_id: '', can_create_workflows: false, requires_workflow_approval: true, can_manage_users: false });
+      showToast('success', `Role "${newRole.name}" created successfully!`);
       fetchData();
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to create role');
+      showToast('error', err.response?.data?.message || 'Failed to create role');
     }
   };
 
@@ -182,11 +201,11 @@ const RoleManager = () => {
     if (!impactTarget) return;
     try {
       await api.delete(`/admin/roles/${impactTarget.id}`);
-      alert(`Role "${impactTarget.name}" has been sealed successfully.`);
+      showToast('success', `Role "${impactTarget.name}" has been sealed successfully.`);
       setImpactTarget(null);
       fetchData();
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to seal role');
+      showToast('error', err.response?.data?.message || 'Failed to seal role');
     }
   };
 
@@ -195,20 +214,24 @@ const RoleManager = () => {
     if (!window.confirm(`Set "${roleName}" as the Escalation Fallback role? Only one role can hold this designation at a time.`)) return;
     try {
       await api.put(`/admin/roles/${roleId}/fallback`);
+      showToast('success', `"${roleName}" set as the Escalation Fallback role.`);
       fetchData();
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to set fallback role');
+      showToast('error', err.response?.data?.message || 'Failed to set fallback role');
     }
   };
 
   return (
     <>
+      {/* Toast */}
+      <RoleManagerToast toast={toast} />
       {/* Pitfall 1 & 2 FIX: Impact Report Modal */}
       {impactTarget && (
         <ImpactReportModal
           role={impactTarget}
           onClose={() => setImpactTarget(null)}
           onConfirmSeal={handleSealRole}
+          showToast={showToast}
         />
       )}
 

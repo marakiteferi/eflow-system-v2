@@ -7,10 +7,21 @@ const DocumentDetailsModal = ({ document, onClose }) => {
   const [history, setHistory] = useState([]);
   const [clearances, setClearances] = useState([]);
   const [attachments, setAttachments] = useState([]);
+  const [versions, setVersions] = useState([]);
   const [attachFile, setAttachFile] = useState(null);
   const [attachDesc, setAttachDesc] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [scale, setScale] = useState(1);
+  const [chainVerification, setChainVerification] = useState(null);
+  const [showVerifyModal, setShowVerifyModal] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [isAttaching, setIsAttaching] = useState(false);
+  const [toastMsg, setToastMsg] = useState({ type: '', text: '' });
+
+  const showToast = (type, text) => {
+    setToastMsg({ type, text });
+    setTimeout(() => setToastMsg({ type: '', text: '' }), 4000);
+  };
   
   const viewerRef = useRef(null);
   const imageContainerRef = useRef(null);
@@ -27,14 +38,16 @@ const DocumentDetailsModal = ({ document, onClose }) => {
     const fetchHistory = async () => {
       if (!document) return; // Safe guard inside the hook
       try {
-        const [histRes, clearRes, attachRes] = await Promise.all([
+        const [histRes, clearRes, attachRes, versionsRes] = await Promise.all([
           api.get(`/documents/${document.id}/history`),
           api.get(`/documents/${document.id}/clearances`).catch(() => ({ data: [] })),
-          api.get(`/documents/${document.id}/attachments`).catch(() => ({ data: [] }))
+          api.get(`/documents/${document.id}/attachments`).catch(() => ({ data: [] })),
+          api.get(`/documents/${document.id}/versions`).catch(() => ({ data: [] }))
         ]);
         setHistory(histRes.data);
         setClearances(clearRes.data);
         setAttachments(attachRes.data);
+        setVersions(versionsRes.data);
       } catch (error) {
         console.error('Failed to fetch history:', error);
       } finally {
@@ -95,14 +108,14 @@ const DocumentDetailsModal = ({ document, onClose }) => {
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error("Download failed:", error);
-      alert("Failed to download file. Ensure your server is running.");
+      showToast('error', 'Failed to download file. Ensure your server is running.');
     }
   };
 
   const toggleFullScreen = () => {
     if (!window.document.fullscreenElement) {
       viewerRef.current.requestFullscreen().catch(err => {
-        alert(`Error attempting to enable fullscreen: ${err.message}`);
+        showToast('error', `Fullscreen failed: ${err.message}`);
       });
     } else {
       window.document.exitFullscreen();
@@ -111,19 +124,41 @@ const DocumentDetailsModal = ({ document, onClose }) => {
 
   const handleAttach = async () => {
     if (!attachFile) return;
+    if (attachFile.size > 10 * 1024 * 1024) {
+      showToast('error', 'File too large. Maximum size is 10 MB.');
+      return;
+    }
+    setIsAttaching(true);
     const formData = new FormData();
     formData.append('file', attachFile);
     formData.append('description', attachDesc);
     try {
       await api.post(`/documents/${document.id}/attachments`, formData);
-      alert('File attached successfully');
+      showToast('success', 'File attached successfully!');
       setAttachFile(null);
       setAttachDesc('');
       const res = await api.get(`/documents/${document.id}/attachments`);
       setAttachments(res.data);
     } catch (err) {
       console.error(err);
-      alert('Failed to attach file');
+      showToast('error', err.response?.data?.message || 'Failed to attach file.');
+    } finally {
+      setIsAttaching(false);
+    }
+  };
+
+  const verifyChain = async () => {
+    setIsVerifying(true);
+    setShowVerifyModal(true);
+    try {
+      const res = await api.get(`/documents/${document.id}/verify-chain`);
+      setChainVerification(res.data);
+    } catch (err) {
+      console.error(err);
+      showToast('error', 'Verification failed.');
+      setShowVerifyModal(false);
+    } finally {
+      setIsVerifying(false);
     }
   };
 
@@ -132,6 +167,15 @@ const DocumentDetailsModal = ({ document, onClose }) => {
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-[60]">
+      {/* Toast */}
+      {toastMsg.text && (
+        <div className="fixed top-6 right-6 z-[80] animate-fade-in">
+          <div className={`px-6 py-4 rounded-xl shadow-2xl border-l-4 font-semibold text-sm flex items-center gap-3 ${toastMsg.type === 'error' ? 'bg-white border-red-500 text-red-700' : 'bg-white border-green-500 text-green-700'}`}>
+            <span className="text-xl">{toastMsg.type === 'error' ? '🚨' : '✅'}</span>
+            {toastMsg.text}
+          </div>
+        </div>
+      )}
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden">
         
         {/* Header */}
@@ -271,7 +315,13 @@ const DocumentDetailsModal = ({ document, onClose }) => {
 
             {/* Document History Timeline */}
             <div className="flex-grow flex flex-col">
-              <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4 border-b pb-2">Approval History</h3>
+              <div className="flex justify-between items-center mb-4 border-b pb-2">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Approval History</h3>
+                <button onClick={verifyChain} className="text-xs bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg hover:bg-indigo-100 font-bold transition-colors border border-indigo-200 shadow-sm flex items-center gap-1">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                  Verify Integrity
+                </button>
+              </div>
               
               {isLoading ? (
                 <p className="text-sm text-gray-500">Loading timeline...</p>
@@ -330,10 +380,11 @@ const DocumentDetailsModal = ({ document, onClose }) => {
 
                 {(isAssignee || isAdmin) && (
                   <div className="bg-gray-50 p-3 rounded border border-gray-200">
-                    <h4 className="text-xs font-bold text-gray-600 uppercase mb-2">Attach Supporting File</h4>
+                    <h4 className="text-xs font-bold text-gray-600 uppercase mb-2">Attach Supporting File (PDF only, max 10 MB)</h4>
                     <div className="flex flex-col gap-2">
                       <input 
                         type="file" 
+                        accept=".pdf,application/pdf"
                         onChange={(e) => setAttachFile(e.target.files[0])} 
                         className="text-sm text-gray-600"
                       />
@@ -346,10 +397,10 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                       />
                       <button 
                         onClick={handleAttach}
-                        disabled={!attachFile}
-                        className={`py-1.5 rounded text-sm font-bold text-white transition-colors ${attachFile ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-400 cursor-not-allowed'}`}
+                        disabled={!attachFile || isAttaching}
+                        className={`py-1.5 rounded text-sm font-bold text-white transition-colors ${attachFile && !isAttaching ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-400 cursor-not-allowed'}`}
                       >
-                        Upload Attachment
+                        {isAttaching ? 'Uploading...' : 'Upload Attachment'}
                       </button>
                     </div>
                   </div>
@@ -357,10 +408,150 @@ const DocumentDetailsModal = ({ document, onClose }) => {
               </div>
             )}
 
+            {/* Version History Section */}
+            {versions.length > 0 && (
+              <div className="flex flex-col mt-6 border-t pt-4">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-3 border-b pb-2 flex items-center gap-2">
+                  <span>📋</span> Version History
+                  <span className="ml-auto text-xs font-semibold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">{versions.length} saved version{versions.length > 1 ? 's' : ''}</span>
+                </h3>
+                <div className="space-y-3 pl-2 border-l-2 border-amber-200 ml-2">
+                  {versions.map((ver, idx) => {
+                    const verPath = ver.file_path?.replace(/\\/g, '/');
+                    const verUrl = verPath ? `http://localhost:5000/${verPath.startsWith('/') ? verPath.substring(1) : verPath}?v=${Date.now()}` : null;
+                    return (
+                      <div key={ver.id} className="relative pl-6">
+                        <span className="absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-white bg-amber-400"></span>
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded">Version {ver.version_number}</span>
+                            <span className="text-xs text-gray-400">{new Date(ver.created_at).toLocaleDateString()}</span>
+                          </div>
+                          {ver.rejection_reason && (
+                            <div className="mt-1.5 text-xs bg-red-50 border border-red-100 text-red-700 px-2 py-1.5 rounded">
+                              <span className="font-bold">Rejection reason:</span> "{ver.rejection_reason}"
+                            </div>
+                          )}
+                          {verUrl && (
+                            <button
+                              onClick={(e) => handleDownload(e, verUrl, `${document.title}_v${ver.version_number}`)}
+                              className="mt-2 text-xs bg-white border border-amber-300 text-amber-700 px-2.5 py-1 rounded hover:bg-amber-100 font-semibold transition-colors flex items-center gap-1"
+                            >
+                              ⬇ Download v{ver.version_number}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {/* Current Version indicator */}
+                  <div className="relative pl-6">
+                    <span className="absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-white bg-blue-500"></span>
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-blue-800 bg-blue-100 px-2 py-0.5 rounded">Version {versions.length + 1} (Current)</span>
+                        <span className="text-xs text-gray-400">{new Date(document.updated_at || document.created_at).toLocaleDateString()}</span>
+                      </div>
+                      <p className="text-xs text-blue-600 mt-1">This is the active version of the document.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
 
           </div>
         </div>
       </div>
+
+      {/* Verification Modal */}
+      {showVerifyModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-[70]">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                Cryptographic Integrity Verification
+              </h3>
+              <button onClick={() => setShowVerifyModal(false)} className="text-gray-400 hover:text-red-600 font-bold text-2xl leading-none">&times;</button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto max-h-[70vh]">
+              {isVerifying ? (
+                <div className="flex flex-col items-center justify-center py-10">
+                  <div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
+                  <p className="text-gray-600 font-medium">Verifying hash chain...</p>
+                </div>
+              ) : chainVerification ? (
+                <div className="space-y-6">
+                  <div className={`p-4 rounded-lg border flex items-start gap-4 ${chainVerification.chain_valid ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                    <div className={`p-2 rounded-full ${chainVerification.chain_valid ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
+                      {chainVerification.chain_valid ? (
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                      ) : (
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                      )}
+                    </div>
+                    <div>
+                      <h4 className={`text-lg font-bold ${chainVerification.chain_valid ? 'text-green-800' : 'text-red-800'}`}>
+                        {chainVerification.chain_valid ? 'Verification Passed' : 'Verification Failed'}
+                      </h4>
+                      <p className={`text-sm mt-1 ${chainVerification.chain_valid ? 'text-green-700' : 'text-red-700'}`}>
+                        {chainVerification.chain_valid 
+                          ? 'The document and its entire approval history are cryptographically sound. No tampering detected.'
+                          : 'The approval chain has been compromised. Hashes or signatures do not match the expected values.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-3 border-b pb-2">Detailed Hash Chain</h4>
+                    <div className="space-y-3">
+                      {chainVerification.approvals.map((app, idx) => (
+                        <div key={idx} className="bg-white border border-gray-200 p-4 rounded-lg shadow-sm">
+                          <div className="flex justify-between items-start mb-2">
+                            <span className="text-sm font-bold text-gray-800">Step {app.order} (Approver ID: {app.approver_id})</span>
+                            <span className="text-xs text-gray-500">{new Date(app.timestamp).toLocaleString()}</span>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-4 mt-3">
+                            <div className="flex items-center gap-2">
+                              {app.signature_valid ? <span className="text-green-500 font-bold">✓</span> : <span className="text-red-500 font-bold">✗</span>}
+                              <span className="text-xs text-gray-600">HMAC Signature</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {app.hash_consistent ? <span className="text-green-500 font-bold">✓</span> : <span className="text-red-500 font-bold">✗</span>}
+                              <span className="text-xs text-gray-600">Chain Link Consistent</span>
+                            </div>
+                            {idx === chainVerification.approvals.length - 1 && (
+                              <div className="flex items-center gap-2 col-span-2">
+                                {app.document_unchanged ? <span className="text-green-500 font-bold">✓</span> : <span className="text-yellow-500 font-bold">⚠</span>}
+                                <span className="text-xs text-gray-600">
+                                  {app.document_unchanged 
+                                    ? 'Document matches initial hash' 
+                                    : 'Document has been stamped (expected post-approval)'}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {chainVerification.approvals.length === 0 && (
+                        <p className="text-sm text-gray-500 italic">No approvals recorded yet.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-red-500 text-center">Failed to load verification data.</div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end">
+              <button onClick={() => setShowVerifyModal(false)} className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg font-bold shadow-sm hover:bg-gray-50 transition-colors">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

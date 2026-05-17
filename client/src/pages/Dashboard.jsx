@@ -33,6 +33,7 @@ const Dashboard = () => {
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [otpInput, setOtpInput] = useState('');
+  const [savedSignature, setSavedSignature] = useState('');
 
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectComment, setRejectComment] = useState('');
@@ -40,6 +41,17 @@ const Dashboard = () => {
   const [resubmitDocId, setResubmitDocId] = useState(null);
   const [resubmitFile, setResubmitFile] = useState(null);
   const [isResubmitting, setIsResubmitting] = useState(false);
+
+  // Loading States and Toasts
+  const [isApproving, setIsApproving] = useState(false);
+  const [isRequestingOtp, setIsRequestingOtp] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [toastMessage, setToastMessage] = useState({ type: '', text: '' });
+
+  const showToast = (type, text) => {
+    setToastMessage({ type, text });
+    setTimeout(() => setToastMessage({ type: '', text: '' }), 4000);
+  };
 
   // NEW: Checklist Modal States
   const [showChecklistModal, setShowChecklistModal] = useState(false);
@@ -68,6 +80,10 @@ const Dashboard = () => {
         // Staff need workflow data to read the checklists!
         const wfResponse = await api.get('/workflows');
         setWorkflows(wfResponse.data);
+        const profileRes = await api.get('/auth/profile');
+        if (profileRes.data?.signature_data) {
+          setSavedSignature(profileRes.data.signature_data);
+        }
       }
       if (canManageUsers || canCreateWorkflows) {
         const logsResponse = await api.get('/admin/audit-logs');
@@ -102,13 +118,14 @@ const Dashboard = () => {
   };
 
   const handleRoleChange = async (targetUserId, newRoleId) => {
-    if (targetUserId === user.id) return alert("You cannot change your own role!");
+    if (targetUserId === user.id) { showToast('error', 'You cannot change your own role!'); return; }
     try {
       await api.put(`/admin/users/${targetUserId}/role`, { role_id: parseInt(newRoleId) });
-      alert('User role updated!');
+      showToast('success', 'User role updated!');
       fetchData();
     } catch (error) {
       console.error('Failed to update role', error);
+      showToast('error', 'Failed to update role.');
     }
   };
 
@@ -146,25 +163,32 @@ const Dashboard = () => {
   };
 
   const proceedToOtp = async (docId) => {
+    setIsRequestingOtp(true);
     try {
       await api.post('/approvals/request-otp', { documentId: docId });
       setShowChecklistModal(false);
       setShowOtpModal(true);
     } catch (err) {
       console.error(err);
-      alert('Failed to request OTP');
+      showToast('error', err.response?.data?.message || 'Failed to request OTP');
+    } finally {
+      setIsRequestingOtp(false);
     }
   };
 
   const handleSubmitOtp = async () => {
+    setIsApproving(true);
+    const signatureDrawing = savedSignature || null;
     try {
-      await api.post('/approvals/approve', { documentId: selectedDocId, otp: otpInput, comments: 'Verified by Staff' });
+      await api.post('/approvals/approve', { documentId: selectedDocId, otp: otpInput, comments: 'Verified by Staff', signatureDrawing });
       setShowOtpModal(false);
       setOtpInput('');
       fetchData();
-      alert('Approved successfully!');
+      showToast('success', 'Approved successfully!');
     } catch (err) {
-      alert(err.response?.data?.message || 'Invalid OTP');
+      showToast('error', err.response?.data?.message || 'Invalid OTP');
+    } finally {
+      setIsApproving(false);
     }
   };
 
@@ -176,14 +200,19 @@ const Dashboard = () => {
   };
 
   const handleRejectSubmit = async () => {
-    if (!rejectComment.trim()) return alert('Reason required.');
+    if (!rejectComment.trim()) return showToast('error', 'Reason required.');
+    setIsRejecting(true);
     try {
       await api.post('/approvals/reject', { documentId: selectedDocId, comments: rejectComment });
       setShowRejectModal(false);
       setRejectComment('');
       fetchData();
+      showToast('success', 'Document rejected.');
     } catch (error) {
       console.error(error);
+      showToast('error', 'Failed to reject document.');
+    } finally {
+      setIsRejecting(false);
     }
   };
 
@@ -194,7 +223,7 @@ const Dashboard = () => {
   };
 
   const handleResubmit = async () => {
-    if (!resubmitFile) return alert('Please select a new file.');
+    if (!resubmitFile) return showToast('error', 'Please select a new file.');
     setIsResubmitting(true);
     const formData = new FormData();
     formData.append('document', resubmitFile);
@@ -203,12 +232,12 @@ const Dashboard = () => {
       await api.put(`/documents/resubmit/${resubmitDocId}`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      alert('Document successfully resubmitted!');
+      showToast('success', 'Document successfully resubmitted!');
       setShowResubmitModal(false);
       setResubmitFile(null);
       fetchData();
     } catch (error) {
-      alert('Failed to resubmit document.');
+      showToast('error', 'Failed to resubmit document.');
     } finally {
       setIsResubmitting(false);
     }
@@ -249,7 +278,7 @@ const Dashboard = () => {
       await api.patch(`/documents/${docId}/tag`, { tag });
     } catch (err) {
       console.error('Failed to set tag:', err);
-      alert(err.response?.data?.message || 'Failed to set tag.');
+      showToast('error', err.response?.data?.message || 'Failed to set tag.');
     }
   };
 
@@ -395,10 +424,21 @@ const Dashboard = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-100 text-sm">
-                {filteredDocs.filter(d => d.status === 'Pending').length === 0 ? (
+                {filteredDocs.filter(d => {
+                    if (d.status !== 'Pending') return false;
+                    // If this is a parallel doc and the current user already completed their branch, hide it
+                    const branchData = d.parallel_branch_data;
+                    if (branchData && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
+                    return true;
+                  }).length === 0 ? (
                   <tr><td colSpan="5" className="px-6 py-12 text-center text-gray-500">No pending assignments.</td></tr>
                 ) : (
-                  filteredDocs.filter(d => d.status === 'Pending').map((doc) => {
+                  filteredDocs.filter(d => {
+                    if (d.status !== 'Pending') return false;
+                    const branchData = d.parallel_branch_data;
+                    if (branchData && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
+                    return true;
+                  }).map((doc) => {
                     const allowedTags = getNodeAllowedTags(doc);
                     const allowedActions = getNodeAllowedActions(doc);
                     const currentTag = localTags[doc.id] ?? (doc.metadata_tag || '');
@@ -704,7 +744,7 @@ const Dashboard = () => {
                       <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wider">System Audit Trail</h4>
                       <button
                         onClick={() => {
-                          if (auditLogs.length === 0) return alert('No logs to export.');
+                          if (auditLogs.length === 0) { showToast('error', 'No logs to export.'); return; }
                           let csvContent = "data:text/csv;charset=utf-8,Timestamp,Action,Document,User\n";
                           auditLogs.forEach(log => {
                             const date = new Date(log.timestamp).toLocaleString().replace(/,/g, '');
@@ -831,10 +871,13 @@ const Dashboard = () => {
           </div>
 
           <div className="flex items-center gap-6 ml-4">
+            <button onClick={() => window.document.documentElement.classList.toggle('dark-theme')} className="relative text-gray-400 hover:text-gray-600 transition-colors">
+              <span className="w-6 h-6 block text-center leading-6">🌙</span>
+            </button>
             <button onClick={() => setActiveTab('notifications')} className="relative text-gray-400 hover:text-gray-600 transition-colors">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
               {filteredDocs.filter(d => d.status === 'Pending' && d.submitter_id !== user.id).length > 0 && (
-                <span className="absolute 1 top-0 right-0 w-2.5 h-2.5 bg-red-500 border-2 border-white rounded-full"></span>
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 border-2 border-white rounded-full"></span>
               )}
             </button>
             <div className="h-8 w-px bg-gray-200 hidden sm:block"></div>
@@ -849,6 +892,16 @@ const Dashboard = () => {
             </div>
           </div>
         </header>
+
+        {/* Global Toast Notification */}
+        {toastMessage.text && (
+          <div className="fixed top-24 right-8 z-50 animate-fade-in">
+            <div className={`px-6 py-4 rounded-xl shadow-2xl border-l-4 font-semibold text-sm flex items-center gap-3 ${toastMessage.type === 'error' ? 'bg-white border-red-500 text-red-700' : 'bg-white border-green-500 text-green-700'}`}>
+              <span className="text-xl">{toastMessage.type === 'error' ? '🚨' : '✅'}</span>
+              {toastMessage.text}
+            </div>
+          </div>
+        )}
 
         {/* Dynamic Page Content */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-8 relative">
@@ -889,10 +942,10 @@ const Dashboard = () => {
                 <button onClick={() => setShowChecklistModal(false)} className="px-4 py-2 text-gray-600 font-bold hover:bg-gray-100 rounded">Cancel</button>
                 <button
                   onClick={() => proceedToOtp(selectedDocId)}
-                  disabled={checkedItems.length !== currentChecklist.length}
-                  className={`px-4 py-2 rounded font-bold text-white transition-colors ${checkedItems.length === currentChecklist.length ? 'bg-indigo-600 hover:bg-indigo-700 shadow-md' : 'bg-gray-300 cursor-not-allowed text-gray-500'}`}
+                  disabled={checkedItems.length !== currentChecklist.length || isRequestingOtp}
+                  className={`px-4 py-2 rounded font-bold text-white transition-colors ${checkedItems.length === currentChecklist.length && !isRequestingOtp ? 'bg-indigo-600 hover:bg-indigo-700 shadow-md' : 'bg-gray-300 cursor-not-allowed text-gray-500'}`}
                 >
-                  Proceed to Sign
+                  {isRequestingOtp ? 'Processing...' : 'Proceed to Sign'}
                 </button>
               </div>
             </div>
@@ -902,12 +955,36 @@ const Dashboard = () => {
         {/* MODAL 2: OTP / 2FA */}
         {showOtpModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-sm">
-              <h3 className="text-lg font-bold mb-2">2FA Authentication</h3>
-              <input type="text" placeholder="Enter OTP" className="w-full px-3 py-2 border rounded-md mb-4" value={otpInput} onChange={(e) => setOtpInput(e.target.value)} />
+            <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-md">
+              <h3 className="text-lg font-bold mb-2">Verify & Approve</h3>
+              <p className="text-sm text-gray-600 mb-4">Enter the OTP sent to your email to confirm your approval.</p>
+              
+              <input type="text" placeholder="Enter OTP from email" className="w-full px-3 py-2 border rounded-md mb-4" value={otpInput} onChange={(e) => setOtpInput(e.target.value)} />
+
+              {/* Signature preview — always from profile, no live drawing */}
+              <div className="border border-gray-200 rounded-md bg-gray-50 mb-4 p-3">
+                {savedSignature ? (
+                  <div className="text-center">
+                    <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-2">Your Registered Signature</p>
+                    <img src={savedSignature} alt="Registered Signature" className="h-16 mx-auto object-contain" />
+                  </div>
+                ) : (
+                  <div className="text-center py-4">
+                    <p className="text-sm text-amber-700 font-semibold">⚠️ No signature registered</p>
+                    <p className="text-xs text-gray-500 mt-1">Go to your <strong>Profile</strong> to register your signature before approving documents.</p>
+                  </div>
+                )}
+              </div>
+
               <div className="flex justify-end gap-2">
                 <button onClick={() => setShowOtpModal(false)} className="px-4 py-2 text-gray-600">Cancel</button>
-                <button onClick={handleSubmitOtp} className="px-4 py-2 bg-green-600 text-white rounded font-bold">Verify</button>
+                <button 
+                  onClick={handleSubmitOtp} 
+                  disabled={isApproving || !savedSignature}
+                  className={`px-4 py-2 text-white rounded font-bold transition-colors ${isApproving || !savedSignature ? 'bg-green-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
+                >
+                  {isApproving ? 'Approving...' : 'Sign & Approve'}
+                </button>
               </div>
             </div>
           </div>
@@ -921,7 +998,9 @@ const Dashboard = () => {
               <textarea className="w-full px-3 py-2 border rounded-md mb-4" rows="3" placeholder="Reason..." value={rejectComment} onChange={(e) => setRejectComment(e.target.value)} />
               <div className="flex justify-end gap-2">
                 <button onClick={() => setShowRejectModal(false)} className="px-4 py-2 text-gray-600">Cancel</button>
-                <button onClick={handleRejectSubmit} className="px-4 py-2 bg-red-600 text-white rounded font-bold">Submit</button>
+                <button onClick={handleRejectSubmit} disabled={isRejecting} className={`px-4 py-2 text-white rounded font-bold ${isRejecting ? 'bg-red-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}>
+                  {isRejecting ? 'Rejecting...' : 'Submit'}
+                </button>
               </div>
             </div>
           </div>
