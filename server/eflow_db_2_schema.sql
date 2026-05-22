@@ -102,7 +102,7 @@ CREATE TABLE audit_logs (
 
 -- Insert a default Super Admin so the system is usable immediately
 -- Password: "admin123" (bcrypt hash — change in production!)
-INSERT INTO users (name, email, password, role_id)
+INSERT INTO users (name, email, password_hash, role_id)
 VALUES (
     'Super Admin',
     'admin@eflow.edu',

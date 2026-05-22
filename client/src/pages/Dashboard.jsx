@@ -249,9 +249,14 @@ const Dashboard = () => {
   };
 
   const filteredDocs = documents.filter(doc => {
-    const titleMatch = doc.title?.toLowerCase().includes(searchQuery.toLowerCase());
-    const textMatch = doc.extracted_text?.toLowerCase().includes(searchQuery.toLowerCase());
-    return titleMatch || textMatch;
+    if (!searchQuery) return true;
+    const query = searchQuery.toLowerCase();
+    const titleMatch = doc.title?.toLowerCase().includes(query);
+    const textMatch = doc.extracted_text?.toLowerCase().includes(query);
+    const statusMatch = doc.status?.toLowerCase().includes(query);
+    const idString = doc.id ? doc.id.toString() : '';
+    const idMatch = idString.includes(query) || `tsk-${idString.substring(0, 4)}`.includes(query);
+    return titleMatch || textMatch || statusMatch || idMatch;
   });
 
   // Helper: get allowed tags array from the current workflow node for a given document
