@@ -346,7 +346,12 @@ router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.sing
                             error = 'Email already exists in the system.';
                         } else {
                             // 2. Check if role exists
-                            if (Role.toLowerCase() === 'super admin') {
+                            const roleNameLower = Role.toLowerCase();
+                            if (roleNameLower === 'student') {
+                                roleId = 1;
+                            } else if (roleNameLower === 'staff' || roleNameLower === 'staff+') {
+                                roleId = 2;
+                            } else if (roleNameLower === 'super admin') {
                                 roleId = 3;
                             } else {
                                 const roleCheck = await pool.query('SELECT id FROM dynamic_roles WHERE name ILIKE $1', [Role]);
