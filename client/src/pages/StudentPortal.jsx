@@ -184,6 +184,321 @@ const ResubmitModal = ({ docId, onClose, onSuccess }) => {
     );
 };
 
+// ─── Sub-views for Student Portal ─────────────────────────────────────────────
+const DashboardView = ({ user, stats, recentDocs, workflows, setViewingDoc, setActiveView }) => (
+    <div>
+        {/* Welcome row */}
+        <div className="flex items-start justify-between mb-8">
+            <div>
+                <h1 className="text-2xl font-bold text-gray-900">Welcome, {user?.name?.split(' ')[0] || 'Student'}!</h1>
+                <p className="text-gray-500 mt-1">Here's a summary of your document activity.</p>
+            </div>
+            <button
+                onClick={() => setActiveView('services')}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold shadow-sm transition-colors"
+            >
+                <span className="text-lg font-bold">+</span> Request New Service
+            </button>
+        </div>
+
+        {/* Stats Cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            {[
+                { label: 'Total Submitted', value: stats.total, color: 'text-gray-900' },
+                { label: 'Pending Approval', value: stats.pending, color: 'text-orange-500' },
+                { label: 'Completed', value: stats.approved, color: 'text-green-600' },
+                { label: 'Rejected', value: stats.rejected, color: 'text-red-500' },
+            ].map(({ label, value, color }) => (
+                <div key={label} className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+                    <p className="text-sm text-gray-500 mb-2">{label}</p>
+                    <p className={`text-3xl font-bold ${color}`}>{value}</p>
+                </div>
+            ))}
+        </div>
+
+        {/* Recent Documents */}
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100">
+                <h2 className="text-base font-bold text-gray-900">Recent Documents</h2>
+            </div>
+            <table className="w-full">
+                <thead>
+                    <tr className="border-b border-gray-100">
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Title</th>
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Category</th>
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Last Updated</th>
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                    {recentDocs.length === 0 ? (
+                        <tr><td colSpan={4} className="px-6 py-8 text-center text-gray-400 text-sm">No documents yet. <button onClick={() => setActiveView('services')} className="text-blue-600 font-semibold hover:underline">Submit your first request →</button></td></tr>
+                    ) : recentDocs.map(doc => {
+                        const wf = workflows.find(w => w.id === doc.workflow_id);
+                        return (
+                            <tr key={doc.id} className="hover:bg-gray-50 cursor-pointer transition-colors" onClick={() => setViewingDoc(doc)}>
+                                <td className="px-6 py-4">
+                                    <p className="text-sm font-semibold text-gray-900">{doc.title}</p>
+                                    {parseInt(doc.total_prereqs || 0) > 0 && (
+                                        <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+                                            <div className="w-full max-w-[150px] bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                                                <div className="bg-blue-600 h-1.5 transition-all duration-300" style={{ width: `${(doc.fulfilled_prereqs / doc.total_prereqs) * 100}%` }}></div>
+                                            </div>
+                                            <p className="text-[10px] text-gray-500 mt-1 font-semibold">{doc.fulfilled_prereqs} of {doc.total_prereqs} clearances approved</p>
+                                        </div>
+                                    )}
+                                </td>
+                                <td className="px-6 py-4 text-sm text-gray-500">{wf?.name || 'General'}</td>
+                                <td className="px-6 py-4">
+                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusStyle(doc.status)}`}>
+                                        {statusLabel(doc.status)}
+                                    </span>
+                                </td>
+                                <td className="px-6 py-4 text-sm text-gray-500">{timeAgo(doc.updated_at || doc.created_at)}</td>
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+        </div>
+    </div>
+);
+
+const ServicesView = ({ workflows, user, myDocs, setUploadWf }) => {
+    const studentWorkflows = workflows.filter(wf => {
+        const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
+        const allowed = flowData.metadata?.allowedSubmitters || [];
+        if (allowed.length === 0) return true; // Global service
+        return allowed.includes(user.role_id);
+    });
+
+    return (
+        <div>
+            <div className="mb-8">
+                <h1 className="text-2xl font-bold text-gray-900">Select a Service</h1>
+                <p className="text-gray-500 mt-1">Choose the type of request you would like to initiate.</p>
+            </div>
+            {studentWorkflows.length === 0 ? (
+                <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
+                    <p className="text-lg font-semibold mb-2">No services available</p>
+                    <p className="text-sm">Please check back later or contact your administrator.</p>
+                </div>
+            ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {studentWorkflows.map((wf, idx) => {
+                        const { bg, icon, emoji } = SERVICE_COLORS[idx % SERVICE_COLORS.length];
+                        
+                        const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
+                        const prereqId = flowData.metadata?.prerequisiteWorkflowId;
+                        let isLocked = false;
+                        let lockMessage = '';
+                        if (prereqId) {
+                            const hasApproved = myDocs.some(d => d.workflow_id === parseInt(prereqId) && d.status === 'Approved');
+                            if (!hasApproved) {
+                                isLocked = true;
+                                const prereqWf = workflows.find(w => w.id === parseInt(prereqId));
+                                lockMessage = `Requires "${prereqWf?.name || 'Previous workflow'}" to be approved first.`;
+                            }
+                        }
+
+                        return (
+                            <button
+                                key={wf.id}
+                                onClick={() => !isLocked && setUploadWf(wf)}
+                                className={`bg-white rounded-xl border border-gray-200 p-6 text-left transition-all group relative ${isLocked ? 'opacity-60 cursor-not-allowed bg-gray-50' : 'hover:shadow-md hover:border-blue-200'}`}
+                            >
+                                {isLocked && <div className="absolute top-3 right-3 text-[10px] bg-red-100 text-red-700 px-2 py-1 rounded font-bold" title={lockMessage}>Locked 🔒</div>}
+                                <div className="flex items-start justify-between mb-4">
+                                    <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center text-xl ${isLocked ? 'grayscale opacity-50' : ''}`}>
+                                        {emoji}
+                                    </div>
+                                    {!isLocked && (
+                                        <span className={`${icon} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                                            <IcoArrow />
+                                        </span>
+                                    )}
+                                </div>
+                                <h3 className="font-bold text-gray-900 text-base mb-1.5">{wf.name}</h3>
+                                <p className="text-sm text-gray-500 leading-relaxed">
+                                    {wf.description || 'Submit a request through this workflow for review and approval.'}
+                                </p>
+                                {isLocked && <p className="text-xs text-red-600 mt-2 font-semibold">{lockMessage}</p>}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+};
+
+const MyDocsView = ({ filteredDocs, myDocs, workflows, setViewingDoc, setResubmitId }) => {
+    const [statusFilter, setStatusFilter] = useState('all');
+    const displayed = filteredDocs.filter(d =>
+        statusFilter === 'all' ? true :
+            statusFilter === 'approved' ? d.status === 'Approved' :
+                statusFilter === 'pending' ? d.status === 'Pending' :
+                    statusFilter === 'rejected' ? d.status === 'Rejected' : true
+    );
+
+    return (
+        <div>
+            <div className="mb-6">
+                <h1 className="text-2xl font-bold text-gray-900">My Documents</h1>
+                <p className="text-gray-500 mt-1">View and manage your submitted documents.</p>
+            </div>
+
+            {/* Filters */}
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                <div className="px-6 py-4 border-b border-gray-100 flex flex-wrap gap-2 items-center justify-between">
+                    <div className="flex gap-2 flex-wrap">
+                        {[
+                            { key: 'all', label: 'All' },
+                            { key: 'pending', label: 'In Review' },
+                            { key: 'approved', label: 'Approved' },
+                            { key: 'rejected', label: 'Rejected' },
+                        ].map(f => (
+                            <button
+                                key={f.key}
+                                onClick={() => setStatusFilter(f.key)}
+                                className={`px-4 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${statusFilter === f.key
+                                    ? 'bg-blue-600 text-white border-blue-600'
+                                    : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+                                    }`}
+                            >
+                                {f.label}
+                            </button>
+                        ))}
+                    </div>
+                    <span className="text-sm text-gray-500">Showing {displayed.length} of {myDocs.length} results</span>
+                </div>
+
+                <table className="w-full">
+                    <thead className="bg-gray-50">
+                        <tr>
+                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Document Name</th>
+                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
+                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Submitted Date</th>
+                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                        {displayed.length === 0 ? (
+                            <tr><td colSpan={5} className="px-6 py-8 text-center text-gray-400 text-sm">No documents found.</td></tr>
+                        ) : displayed.map(doc => {
+                            const wf = workflows.find(w => w.id === doc.workflow_id);
+                            return (
+                                <tr key={doc.id} className="hover:bg-gray-50 transition-colors">
+                                    <td className="px-6 py-4 text-sm font-semibold text-gray-900">{doc.title}</td>
+                                    <td className="px-6 py-4 text-sm text-gray-500">{wf?.name || 'General'}</td>
+                                    <td className="px-6 py-4">
+                                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusStyle(doc.status)}`}>
+                                            {statusLabel(doc.status)}
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-sm text-gray-500">{new Date(doc.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</td>
+                                    <td className="px-6 py-4 text-sm">
+                                        <div className="flex items-center gap-3">
+                                            <button onClick={() => setViewingDoc(doc)} className="text-blue-600 hover:text-blue-800 font-semibold">View</button>
+                                            {doc.status === 'Rejected' && (
+                                                <button onClick={() => setResubmitId(doc.id)} className="text-indigo-600 hover:text-indigo-800 font-semibold">Resubmit</button>
+                                            )}
+                                        </div>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+};
+
+const NotificationsView = ({ myDocs, setResubmitId }) => {
+    const rejected = myDocs.filter(d => d.status === 'Rejected').slice(0, 3);
+    const approved = myDocs.filter(d => d.status === 'Approved').slice(0, 3);
+    const pending = myDocs.filter(d => d.status === 'Pending').slice(0, 3);
+
+    return (
+        <div>
+            <div className="flex items-center justify-between mb-6">
+                <h1 className="text-2xl font-bold text-gray-900">Notifications</h1>
+            </div>
+
+            <div className="space-y-6">
+                {rejected.length > 0 && (
+                    <section>
+                        <h2 className="text-base font-bold text-gray-700 mb-3">Action Required</h2>
+                        <div className="space-y-2">
+                            {rejected.map(doc => (
+                                <div key={doc.id} className="flex items-start gap-4 p-4 bg-white rounded-xl border border-gray-200 border-l-4 border-l-orange-400 shadow-sm">
+                                    <div className="w-7 h-7 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold text-xs flex-shrink-0 mt-0.5">!</div>
+                                    <div className="flex-1">
+                                        <p className="text-sm font-semibold text-gray-900">"{doc.title}" was rejected — action required</p>
+                                        <p className="text-xs text-gray-500 mt-0.5">Your document needs to be revised and resubmitted.</p>
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                        <span className="text-xs text-gray-400">{timeAgo(doc.updated_at || doc.created_at)}</span>
+                                        <button onClick={() => setResubmitId(doc.id)} className="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 px-2.5 py-1 rounded-lg font-semibold transition-colors">Resubmit</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                {approved.length > 0 && (
+                    <section>
+                        <h2 className="text-base font-bold text-gray-700 mb-3">Approved</h2>
+                        <div className="space-y-2">
+                            {approved.map(doc => (
+                                <div key={doc.id} className="flex items-center gap-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm">
+                                    <div className="w-7 h-7 bg-green-100 rounded-full flex items-center justify-center text-green-600 flex-shrink-0">✓</div>
+                                    <div className="flex-1">
+                                        <p className="text-sm font-semibold text-gray-900">"{doc.title}" has been approved</p>
+                                        <p className="text-xs text-gray-500 mt-0.5">Your request was successfully processed.</p>
+                                    </div>
+                                    <span className="text-xs text-gray-400 flex-shrink-0">{timeAgo(doc.updated_at || doc.created_at)}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                {pending.length > 0 && (
+                    <section>
+                        <h2 className="text-base font-bold text-gray-700 mb-3">In Review</h2>
+                        <div className="space-y-2">
+                            {pending.map(doc => (
+                                <div key={doc.id} className="flex items-center gap-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm">
+                                    <div className="w-7 h-7 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 flex-shrink-0">
+                                        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" /></svg>
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className="text-sm font-semibold text-gray-900">"{doc.title}" is currently under review</p>
+                                        <p className="text-xs text-gray-500 mt-0.5">You'll be notified once a decision is made.</p>
+                                    </div>
+                                    <span className="text-xs text-gray-400 flex-shrink-0">{timeAgo(doc.updated_at || doc.created_at)}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                {rejected.length === 0 && approved.length === 0 && pending.length === 0 && (
+                    <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
+                        <p className="text-4xl mb-3">🔔</p>
+                        <p className="font-semibold">No notifications yet</p>
+                        <p className="text-sm mt-1">Submit a request to get started.</p>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
 // ─── Main Student Portal ──────────────────────────────────────────────────────
 const StudentPortal = () => {
     const { user, logout } = useContext(AuthContext);
@@ -217,9 +532,14 @@ const StudentPortal = () => {
         rejected: myDocs.filter(d => d.status === 'Rejected').length,
     };
     const recentDocs = [...myDocs].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5);
-    const filteredDocs = myDocs.filter(d =>
-        d.title?.toLowerCase().includes(searchQuery.toLowerCase())
-    );
+    const filteredDocs = myDocs.filter(d => {
+        if (!searchQuery) return true;
+        const q = searchQuery.toLowerCase();
+        return d.title?.toLowerCase().includes(q) || 
+               d.extracted_text?.toLowerCase().includes(q) ||
+               d.status?.toLowerCase().includes(q) ||
+               (d.metadata_tag && d.metadata_tag.toLowerCase().includes(q));
+    });
 
     const navItems = [
         { key: 'dashboard', label: 'Dashboard', Icon: IcoDashboard },
@@ -228,423 +548,180 @@ const StudentPortal = () => {
         { key: 'notifications', label: 'Notifications', Icon: IcoBell },
     ];
 
-    // ── Sidebar ──────────────────────────────────────────────────────────────
-    const Sidebar = () => (
-        <aside className="w-56 min-h-screen bg-white border-r border-gray-200 flex flex-col fixed left-0 top-0 z-40">
-            {/* Logo */}
-            <div className="px-5 py-5 border-b border-gray-100">
-                <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-                        <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M13 10V3L4 14h7v7l9-11h-7z" />
-                        </svg>
-                    </div>
-                    <div>
-                        <p className="font-bold text-gray-900 text-sm leading-none">E-Flow</p>
-                        <p className="text-xs text-gray-500 mt-0.5">Student Portal</p>
-                    </div>
-                </div>
-            </div>
-
-            {/* Nav Items */}
-            <nav className="flex-1 py-4 px-3 space-y-1">
-                {navItems.map(({ key, label, Icon }) => (
-                    <button
-                        key={key}
-                        onClick={() => setActiveView(key)}
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeView === key
-                            ? 'bg-blue-50 text-blue-600'
-                            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                            }`}
-                    >
-                        <span className={activeView === key ? 'text-blue-600' : 'text-gray-400'}><Icon /></span>
-                        {label}
-                    </button>
-                ))}
-            </nav>
-
-            {/* Bottom: Settings + Logout */}
-            <div className="px-3 py-4 border-t border-gray-100 space-y-1">
-                <button
-                    onClick={() => navigate('/profile')}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
-                >
-                    <span className="text-gray-400"><IcoSettings /></span>
-                    Settings
-                </button>
-                <button
-                    onClick={() => { logout(); navigate('/login'); }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-50 transition-colors"
-                >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                    </svg>
-                    Log out
-                </button>
-            </div>
-        </aside>
-    );
-
-    // ── Top Header ────────────────────────────────────────────────────────────
-    const Header = () => (
-        <header className="fixed top-0 left-56 right-0 h-14 bg-white border-b border-gray-200 z-30 flex items-center px-6 gap-4">
-            <div className="flex-1 relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
-                    <IcoSearch />
-                </span>
-                <input
-                    type="text"
-                    placeholder="Search documents..."
-                    value={searchQuery}
-                    onChange={e => setSearch(e.target.value)}
-                    className="pl-9 pr-4 py-2 text-sm bg-gray-100 rounded-lg w-72 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
-                />
-            </div>
-            <div className="flex items-center gap-3 ml-auto">
-                <button onClick={() => window.document.documentElement.classList.toggle('dark-theme')} className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">🌙</button>
-                <button
-                    onClick={() => setActiveView('notifications')}
-                    className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors relative"
-                >
-                    <IcoBell />
-                </button>
-                <button onClick={() => navigate('/profile')} className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center text-white font-bold text-sm">
-                    {user?.name?.[0]?.toUpperCase() || 'S'}
-                </button>
-            </div>
-        </header>
-    );
-
-    // ── DASHBOARD VIEW ────────────────────────────────────────────────────────
-    const DashboardView = () => (
-        <div>
-            {/* Welcome row */}
-            <div className="flex items-start justify-between mb-8">
+    const renderSearchResultsView = () => (
+        <div className="space-y-6 animate-fade-in">
+            <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900">Welcome, {user?.name?.split(' ')[0] || 'Student'}!</h1>
-                    <p className="text-gray-500 mt-1">Here's a summary of your document activity.</p>
+                    <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Search Results for "{searchQuery}"</h2>
+                    <p className="text-gray-500 mt-1">Found {filteredDocs.length} items matching your query.</p>
                 </div>
-                <button
-                    onClick={() => setActiveView('services')}
-                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold shadow-sm transition-colors"
-                >
-                    <span className="text-lg font-bold">+</span> Request New Service
-                </button>
+                <button onClick={() => setSearch('')} className="text-sm font-semibold text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-lg transition-colors">Clear Search</button>
             </div>
 
-            {/* Stats Cards */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                {[
-                    { label: 'Total Submitted', value: stats.total, color: 'text-gray-900' },
-                    { label: 'Pending Approval', value: stats.pending, color: 'text-orange-500' },
-                    { label: 'Completed', value: stats.approved, color: 'text-green-600' },
-                    { label: 'Rejected', value: stats.rejected, color: 'text-red-500' },
-                ].map(({ label, value, color }) => (
-                    <div key={label} className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-                        <p className="text-sm text-gray-500 mb-2">{label}</p>
-                        <p className={`text-3xl font-bold ${color}`}>{value}</p>
-                    </div>
-                ))}
-            </div>
-
-            {/* Recent Documents */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                <div className="px-6 py-4 border-b border-gray-100">
-                    <h2 className="text-base font-bold text-gray-900">Recent Documents</h2>
-                </div>
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                 <table className="w-full">
-                    <thead>
-                        <tr className="border-b border-gray-100">
-                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Title</th>
-                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Category</th>
+                    <thead className="bg-gray-50">
+                        <tr>
+                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Document Details</th>
                             <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
-                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Last Updated</th>
+                            <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
+                            <th className="text-center px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Action</th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-50">
-                        {recentDocs.length === 0 ? (
-                            <tr><td colSpan={4} className="px-6 py-8 text-center text-gray-400 text-sm">No documents yet. <button onClick={() => setActiveView('services')} className="text-blue-600 font-semibold hover:underline">Submit your first request →</button></td></tr>
-                        ) : recentDocs.map(doc => {
-                            const wf = workflows.find(w => w.id === doc.workflow_id);
-                            return (
-                                <tr key={doc.id} className="hover:bg-gray-50 cursor-pointer transition-colors" onClick={() => setViewingDoc(doc)}>
-                                    <td className="px-6 py-4">
-                                        <p className="text-sm font-semibold text-gray-900">{doc.title}</p>
-                                        {parseInt(doc.total_prereqs || 0) > 0 && (
-                                            <div className="mt-2" onClick={(e) => e.stopPropagation()}>
-                                                <div className="w-full max-w-[150px] bg-gray-200 rounded-full h-1.5 overflow-hidden">
-                                                    <div className="bg-blue-600 h-1.5 transition-all duration-300" style={{ width: `${(doc.fulfilled_prereqs / doc.total_prereqs) * 100}%` }}></div>
-                                                </div>
-                                                <p className="text-[10px] text-gray-500 mt-1 font-semibold">{doc.fulfilled_prereqs} of {doc.total_prereqs} clearances approved</p>
-                                            </div>
-                                        )}
-                                    </td>
-                                    <td className="px-6 py-4 text-sm text-gray-500">{wf?.name || 'General'}</td>
-                                    <td className="px-6 py-4">
-                                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusStyle(doc.status)}`}>
-                                            {statusLabel(doc.status)}
-                                        </span>
-                                    </td>
-                                    <td className="px-6 py-4 text-sm text-gray-500">{timeAgo(doc.updated_at || doc.created_at)}</td>
-                                </tr>
-                            );
-                        })}
+                    <tbody className="divide-y divide-gray-100">
+                        {filteredDocs.length === 0 ? (
+                            <tr><td colSpan={4} className="px-6 py-12 text-center text-gray-500">No results found for "{searchQuery}".</td></tr>
+                        ) : filteredDocs.map(doc => (
+                            <tr key={doc.id} className="hover:bg-gray-50 transition-colors group">
+                                <td className="px-6 py-4">
+                                    <p className="font-bold text-gray-900 cursor-pointer group-hover:text-blue-600" onClick={() => setViewingDoc(doc)}>{doc.title}</p>
+                                    {doc.extracted_text && doc.extracted_text.toLowerCase().includes(searchQuery.toLowerCase()) && (
+                                        <p className="text-xs text-gray-500 mt-1 line-clamp-2 italic">
+                                            "... {doc.extracted_text.substring(Math.max(0, doc.extracted_text.toLowerCase().indexOf(searchQuery.toLowerCase()) - 30), doc.extracted_text.toLowerCase().indexOf(searchQuery.toLowerCase()) + 60)} ..."
+                                        </p>
+                                    )}
+                                </td>
+                                <td className="px-6 py-4">
+                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusStyle(doc.status)}`}>
+                                        {statusLabel(doc.status)}
+                                    </span>
+                                </td>
+                                <td className="px-6 py-4 text-sm text-gray-500">{new Date(doc.created_at).toLocaleDateString()}</td>
+                                <td className="px-6 py-4 text-center">
+                                    <button onClick={() => setViewingDoc(doc)} className="text-blue-600 hover:text-white px-3 py-1.5 rounded text-xs font-bold border border-blue-200 hover:bg-blue-600 transition-colors">View Document</button>
+                                </td>
+                            </tr>
+                        ))}
                     </tbody>
                 </table>
             </div>
         </div>
     );
 
-    // ── SERVICES VIEW ─────────────────────────────────────────────────────────
-    const ServicesView = () => {
-        const studentWorkflows = workflows.filter(wf => {
-            const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
-            const allowed = flowData.metadata?.allowedSubmitters || [];
-            if (allowed.length === 0) return true; // Global service
-            return allowed.includes(user.role_id);
-        });
-
-        return (
-            <div>
-                <div className="mb-8">
-                    <h1 className="text-2xl font-bold text-gray-900">Select a Service</h1>
-                    <p className="text-gray-500 mt-1">Choose the type of request you would like to initiate.</p>
-                </div>
-                {studentWorkflows.length === 0 ? (
-                    <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
-                        <p className="text-lg font-semibold mb-2">No services available</p>
-                        <p className="text-sm">Please check back later or contact your administrator.</p>
-                    </div>
-                ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {studentWorkflows.map((wf, idx) => {
-                            const { bg, icon, emoji } = SERVICE_COLORS[idx % SERVICE_COLORS.length];
-                            
-                            const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
-                            const prereqId = flowData.metadata?.prerequisiteWorkflowId;
-                            let isLocked = false;
-                            let lockMessage = '';
-                            if (prereqId) {
-                                const hasApproved = myDocs.some(d => d.workflow_id === parseInt(prereqId) && d.status === 'Approved');
-                                if (!hasApproved) {
-                                    isLocked = true;
-                                    const prereqWf = workflows.find(w => w.id === parseInt(prereqId));
-                                    lockMessage = `Requires "${prereqWf?.name || 'Previous workflow'}" to be approved first.`;
-                                }
-                            }
-
-                            return (
-                                <button
-                                    key={wf.id}
-                                    onClick={() => !isLocked && setUploadWf(wf)}
-                                    className={`bg-white rounded-xl border border-gray-200 p-6 text-left transition-all group relative ${isLocked ? 'opacity-60 cursor-not-allowed bg-gray-50' : 'hover:shadow-md hover:border-blue-200'}`}
-                                >
-                                    {isLocked && <div className="absolute top-3 right-3 text-[10px] bg-red-100 text-red-700 px-2 py-1 rounded font-bold" title={lockMessage}>Locked 🔒</div>}
-                                    <div className="flex items-start justify-between mb-4">
-                                        <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center text-xl ${isLocked ? 'grayscale opacity-50' : ''}`}>
-                                            {emoji}
-                                        </div>
-                                        {!isLocked && (
-                                            <span className={`${icon} opacity-0 group-hover:opacity-100 transition-opacity`}>
-                                                <IcoArrow />
-                                            </span>
-                                        )}
-                                    </div>
-                                    <h3 className="font-bold text-gray-900 text-base mb-1.5">{wf.name}</h3>
-                                    <p className="text-sm text-gray-500 leading-relaxed">
-                                        {wf.description || 'Submit a request through this workflow for review and approval.'}
-                                    </p>
-                                    {isLocked && <p className="text-xs text-red-600 mt-2 font-semibold">{lockMessage}</p>}
-                                </button>
-                            );
-                        })}
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-    // ── MY DOCUMENTS VIEW ─────────────────────────────────────────────────────
-    const MyDocsView = () => {
-        const [statusFilter, setStatusFilter] = useState('all');
-        const displayed = filteredDocs.filter(d =>
-            statusFilter === 'all' ? true :
-                statusFilter === 'approved' ? d.status === 'Approved' :
-                    statusFilter === 'pending' ? d.status === 'Pending' :
-                        statusFilter === 'rejected' ? d.status === 'Rejected' : true
-        );
-
-        return (
-            <div>
-                <div className="mb-6">
-                    <h1 className="text-2xl font-bold text-gray-900">My Documents</h1>
-                    <p className="text-gray-500 mt-1">View and manage your submitted documents.</p>
-                </div>
-
-                {/* Filters */}
-                <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                    <div className="px-6 py-4 border-b border-gray-100 flex flex-wrap gap-2 items-center justify-between">
-                        <div className="flex gap-2 flex-wrap">
-                            {[
-                                { key: 'all', label: 'All' },
-                                { key: 'pending', label: 'In Review' },
-                                { key: 'approved', label: 'Approved' },
-                                { key: 'rejected', label: 'Rejected' },
-                            ].map(f => (
-                                <button
-                                    key={f.key}
-                                    onClick={() => setStatusFilter(f.key)}
-                                    className={`px-4 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${statusFilter === f.key
-                                        ? 'bg-blue-600 text-white border-blue-600'
-                                        : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
-                                        }`}
-                                >
-                                    {f.label}
-                                </button>
-                            ))}
-                        </div>
-                        <span className="text-sm text-gray-500">Showing {displayed.length} of {myDocs.length} results</span>
-                    </div>
-
-                    <table className="w-full">
-                        <thead className="bg-gray-50">
-                            <tr>
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Document Name</th>
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Submitted Date</th>
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                            {displayed.length === 0 ? (
-                                <tr><td colSpan={5} className="px-6 py-8 text-center text-gray-400 text-sm">No documents found.</td></tr>
-                            ) : displayed.map(doc => {
-                                const wf = workflows.find(w => w.id === doc.workflow_id);
-                                return (
-                                    <tr key={doc.id} className="hover:bg-gray-50 transition-colors">
-                                        <td className="px-6 py-4 text-sm font-semibold text-gray-900">{doc.title}</td>
-                                        <td className="px-6 py-4 text-sm text-gray-500">{wf?.name || 'General'}</td>
-                                        <td className="px-6 py-4">
-                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusStyle(doc.status)}`}>
-                                                {statusLabel(doc.status)}
-                                            </span>
-                                        </td>
-                                        <td className="px-6 py-4 text-sm text-gray-500">{new Date(doc.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</td>
-                                        <td className="px-6 py-4 text-sm">
-                                            <div className="flex items-center gap-3">
-                                                <button onClick={() => setViewingDoc(doc)} className="text-blue-600 hover:text-blue-800 font-semibold">View</button>
-                                                {doc.status === 'Rejected' && (
-                                                    <button onClick={() => setResubmitId(doc.id)} className="text-indigo-600 hover:text-indigo-800 font-semibold">Resubmit</button>
-                                                )}
-                                            </div>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        );
-    };
-
-    // ── NOTIFICATIONS VIEW ────────────────────────────────────────────────────
-    const NotificationsView = () => {
-        const rejected = myDocs.filter(d => d.status === 'Rejected').slice(0, 3);
-        const approved = myDocs.filter(d => d.status === 'Approved').slice(0, 3);
-        const pending = myDocs.filter(d => d.status === 'Pending').slice(0, 3);
-
-        return (
-            <div>
-                <div className="flex items-center justify-between mb-6">
-                    <h1 className="text-2xl font-bold text-gray-900">Notifications</h1>
-                </div>
-
-                <div className="space-y-6">
-                    {rejected.length > 0 && (
-                        <section>
-                            <h2 className="text-base font-bold text-gray-700 mb-3">Action Required</h2>
-                            <div className="space-y-2">
-                                {rejected.map(doc => (
-                                    <div key={doc.id} className="flex items-start gap-4 p-4 bg-white rounded-xl border border-gray-200 border-l-4 border-l-orange-400 shadow-sm">
-                                        <div className="w-7 h-7 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold text-xs flex-shrink-0 mt-0.5">!</div>
-                                        <div className="flex-1">
-                                            <p className="text-sm font-semibold text-gray-900">"{doc.title}" was rejected — action required</p>
-                                            <p className="text-xs text-gray-500 mt-0.5">Your document needs to be revised and resubmitted.</p>
-                                        </div>
-                                        <div className="flex items-center gap-2 flex-shrink-0">
-                                            <span className="text-xs text-gray-400">{timeAgo(doc.updated_at || doc.created_at)}</span>
-                                            <button onClick={() => setResubmitId(doc.id)} className="text-xs bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 px-2.5 py-1 rounded-lg font-semibold transition-colors">Resubmit</button>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </section>
-                    )}
-
-                    {approved.length > 0 && (
-                        <section>
-                            <h2 className="text-base font-bold text-gray-700 mb-3">Approved</h2>
-                            <div className="space-y-2">
-                                {approved.map(doc => (
-                                    <div key={doc.id} className="flex items-center gap-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm">
-                                        <div className="w-7 h-7 bg-green-100 rounded-full flex items-center justify-center text-green-600 flex-shrink-0">✓</div>
-                                        <div className="flex-1">
-                                            <p className="text-sm font-semibold text-gray-900">"{doc.title}" has been approved</p>
-                                            <p className="text-xs text-gray-500 mt-0.5">Your request was successfully processed.</p>
-                                        </div>
-                                        <span className="text-xs text-gray-400 flex-shrink-0">{timeAgo(doc.updated_at || doc.created_at)}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        </section>
-                    )}
-
-                    {pending.length > 0 && (
-                        <section>
-                            <h2 className="text-base font-bold text-gray-700 mb-3">In Review</h2>
-                            <div className="space-y-2">
-                                {pending.map(doc => (
-                                    <div key={doc.id} className="flex items-center gap-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm">
-                                        <div className="w-7 h-7 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 flex-shrink-0">
-                                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" /></svg>
-                                        </div>
-                                        <div className="flex-1">
-                                            <p className="text-sm font-semibold text-gray-900">"{doc.title}" is currently under review</p>
-                                            <p className="text-xs text-gray-500 mt-0.5">You'll be notified once a decision is made.</p>
-                                        </div>
-                                        <span className="text-xs text-gray-400 flex-shrink-0">{timeAgo(doc.updated_at || doc.created_at)}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        </section>
-                    )}
-
-                    {rejected.length === 0 && approved.length === 0 && pending.length === 0 && (
-                        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
-                            <p className="text-4xl mb-3">🔔</p>
-                            <p className="font-semibold">No notifications yet</p>
-                            <p className="text-sm mt-1">Submit a request to get started.</p>
-                        </div>
-                    )}
-                </div>
-            </div>
-        );
-    };
-
-    // ── Render ────────────────────────────────────────────────────────────────
     return (
         <div className="min-h-screen bg-gray-50">
-            <Sidebar />
-            <Header />
+            {/* Sidebar */}
+            <aside className="w-56 min-h-screen bg-white border-r border-gray-200 flex flex-col fixed left-0 top-0 z-40">
+                {/* Logo */}
+                <div className="px-5 py-5 border-b border-gray-100">
+                    <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                            <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                        </div>
+                        <div>
+                            <p className="font-bold text-gray-900 text-sm leading-none">E-Flow</p>
+                            <p className="text-xs text-gray-500 mt-0.5">Student Portal</p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Nav Items */}
+                <nav className="flex-1 py-4 px-3 space-y-1">
+                    {navItems.map(({ key, label, Icon }) => (
+                        <button
+                            key={key}
+                            onClick={() => setActiveView(key)}
+                            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeView === key
+                                ? 'bg-blue-50 text-blue-600'
+                                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                                }`}
+                        >
+                            <span className={activeView === key ? 'text-blue-600' : 'text-gray-400'}><Icon /></span>
+                            {label}
+                        </button>
+                    ))}
+                </nav>
+
+                {/* Bottom: Settings + Logout */}
+                <div className="px-3 py-4 border-t border-gray-100 space-y-1">
+                    <button
+                        onClick={() => navigate('/profile')}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+                    >
+                        <span className="text-gray-400"><IcoSettings /></span>
+                        Settings
+                    </button>
+                    <button
+                        onClick={() => { logout(); navigate('/login'); }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-red-500 hover:bg-red-50 transition-colors"
+                    >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                        </svg>
+                        Log out
+                    </button>
+                </div>
+            </aside>
+
+            {/* Header */}
+            <header className="fixed top-0 left-56 right-0 h-14 bg-white border-b border-gray-200 z-30 flex items-center px-6 gap-4">
+                <div className="flex-1 relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                        <IcoSearch />
+                    </span>
+                    <input
+                        type="text"
+                        placeholder="Search documents..."
+                        value={searchQuery}
+                        onChange={e => setSearch(e.target.value)}
+                        className="pl-9 pr-4 py-2 text-sm bg-gray-100 rounded-lg w-72 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    />
+                </div>
+                <div className="flex items-center gap-3 ml-auto">
+                    <button onClick={() => window.document.documentElement.classList.toggle('dark-theme')} className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">🌙</button>
+                    <button
+                        onClick={() => setActiveView('notifications')}
+                        className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors relative"
+                    >
+                        <IcoBell />
+                    </button>
+                    <button onClick={() => navigate('/profile')} className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center text-white font-bold text-sm">
+                        {user?.name?.[0]?.toUpperCase() || 'S'}
+                    </button>
+                </div>
+            </header>
 
             <main className="ml-56 pt-14">
                 <div className="max-w-5xl mx-auto px-8 py-8">
-                    {activeView === 'dashboard' && <DashboardView />}
-                    {activeView === 'services' && <ServicesView />}
-                    {activeView === 'my-docs' && <MyDocsView />}
-                    {activeView === 'notifications' && <NotificationsView />}
+                    {searchQuery ? renderSearchResultsView() : (
+                        <>
+                            {activeView === 'dashboard' && (
+                                <DashboardView
+                                    user={user}
+                                    stats={stats}
+                                    recentDocs={recentDocs}
+                                    workflows={workflows}
+                                    setViewingDoc={setViewingDoc}
+                                    setActiveView={setActiveView}
+                                />
+                            )}
+                            {activeView === 'services' && (
+                                <ServicesView
+                                    workflows={workflows}
+                                    user={user}
+                                    myDocs={myDocs}
+                                    setUploadWf={setUploadWf}
+                                />
+                            )}
+                            {activeView === 'my-docs' && (
+                                <MyDocsView
+                                    filteredDocs={filteredDocs}
+                                    myDocs={myDocs}
+                                    workflows={workflows}
+                                    setViewingDoc={setViewingDoc}
+                                    setResubmitId={setResubmitId}
+                                />
+                            )}
+                            {activeView === 'notifications' && (
+                                <NotificationsView
+                                    myDocs={myDocs}
+                                    setResubmitId={setResubmitId}
+                                />
+                            )}
+                        </>
+                    )}
                 </div>
             </main>
 

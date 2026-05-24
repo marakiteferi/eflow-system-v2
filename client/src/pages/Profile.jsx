@@ -13,6 +13,7 @@ const Profile = () => {
 
   // Account settings
   const [name, setName] = useState(user?.name || '');
+  const [emailNotifications, setEmailNotifications] = useState(true);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -30,6 +31,9 @@ const Profile = () => {
       try {
         const res = await api.get('/auth/profile');
         setSavedSignature(res.data?.signature_data || '');
+        if (res.data?.email_notifications !== undefined) {
+          setEmailNotifications(res.data.email_notifications);
+        }
       } catch (err) {
         console.error('Failed to load profile', err);
         setSavedSignature('');
@@ -76,7 +80,7 @@ const Profile = () => {
 
     setIsLoading(true);
     try {
-      const payload = { name };
+      const payload = { name, email_notifications: emailNotifications };
       if (currentPassword && newPassword) {
         payload.currentPassword = currentPassword;
         payload.newPassword = newPassword;
@@ -126,6 +130,30 @@ const Profile = () => {
                 className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
                 required
               />
+            </div>
+
+            <div className="pt-4 border-t border-gray-200 mt-6">
+              <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-4">Preferences</h3>
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Email Notifications</label>
+                  <p className="text-xs text-gray-500">Receive an email when you are assigned a document or when your document is approved/rejected.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEmailNotifications(!emailNotifications)}
+                  className={`${
+                    emailNotifications ? 'bg-indigo-600' : 'bg-gray-200'
+                  } relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`${
+                      emailNotifications ? 'translate-x-5' : 'translate-x-0'
+                    } pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
+                  />
+                </button>
+              </div>
             </div>
 
             <div className="pt-4 border-t border-gray-200 mt-6">

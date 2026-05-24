@@ -135,6 +135,11 @@ router.put('/profile', authenticateToken, async (req, res) => {
             await pool.query('UPDATE users SET name = $1 WHERE id = $2', [name, req.user.id]);
         }
 
+        // Update email notifications setting if provided
+        if (req.body.email_notifications !== undefined) {
+            await pool.query('UPDATE users SET email_notifications = $1 WHERE id = $2', [req.body.email_notifications, req.user.id]);
+        }
+
         if (signatureData) {
             // One-time lock: check if a signature already exists
             const existingCheck = await pool.query('SELECT signature_data FROM users WHERE id = $1', [req.user.id]);
@@ -185,7 +190,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
 // GET: Current User Profile (including signature)
 router.get('/profile', authenticateToken, async (req, res) => {
     try {
-        const userQuery = await pool.query('SELECT id, name, email, role_id, department_id, signature_data FROM users WHERE id = $1', [req.user.id]);
+        const userQuery = await pool.query('SELECT id, name, email, role_id, department_id, signature_data, email_notifications FROM users WHERE id = $1', [req.user.id]);
         if (userQuery.rows.length === 0) {
             return res.status(404).json({ message: 'User not found' });
         }
