@@ -60,7 +60,6 @@ const timeAgo = (dateStr) => {
 const UploadModal = ({ workflow, onClose, onSuccess }) => {
     const [title, setTitle] = useState('');
     const [file, setFile] = useState(null);
-    const [metadataTag, setMetadataTag] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
@@ -72,7 +71,6 @@ const UploadModal = ({ workflow, onClose, onSuccess }) => {
         fd.append('title', title);
         fd.append('document', file);
         fd.append('workflow_id', workflow.id);
-        if (metadataTag) fd.append('metadata_tag', metadataTag);
         try {
             await api.post('/documents/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
             onSuccess();
@@ -115,23 +113,7 @@ const UploadModal = ({ workflow, onClose, onSuccess }) => {
                             required
                         />
                     </div>
-                    {(() => {
-                        const flowData = typeof workflow.flow_structure === 'string' ? JSON.parse(workflow.flow_structure) : workflow.flow_structure;
-                        const startNode = (flowData?.nodes || [])[0];
-                        const tagsStr = startNode?.data?.allowedTags;
-                        if (!tagsStr) return null;
-                        const tagsList = tagsStr.split(',').map(s => s.trim()).filter(Boolean);
-                        if (tagsList.length === 0) return null;
-                        return (
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Select Category / Tag</label>
-                                <select value={metadataTag} onChange={e => setMetadataTag(e.target.value)} required className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                                    <option value="">-- Required --</option>
-                                    {tagsList.map(tag => <option key={tag} value={tag}>{tag}</option>)}
-                                </select>
-                            </div>
-                        );
-                    })()}
+
                     <div className="flex gap-3 pt-2">
                         <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors">
                             Cancel
