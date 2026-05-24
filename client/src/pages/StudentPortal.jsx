@@ -267,7 +267,13 @@ const DashboardView = ({ user, stats, recentDocs, workflows, setViewingDoc, setA
 const ServicesView = ({ workflows, user, myDocs, setUploadWf }) => {
     const studentWorkflows = workflows.filter(wf => {
         const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
-        const allowed = flowData.metadata?.allowedSubmitters || [];
+        const meta = flowData.metadata || {};
+        
+        // Drafts (Unpublished workflows) are hidden from students
+        const isDraft = meta.isPublished === false || (meta.isPublished === undefined && meta.isComplete === false);
+        if (isDraft) return false;
+
+        const allowed = meta.allowedSubmitters || [];
         if (allowed.length === 0) return true; // Global service
         return allowed.includes(user.role_id);
     });
@@ -535,10 +541,15 @@ const StudentPortal = () => {
     const filteredDocs = myDocs.filter(d => {
         if (!searchQuery) return true;
         const q = searchQuery.toLowerCase();
+        
+        const workflowName = d.workflow_id ? workflows.find(w => w.id === d.workflow_id)?.name?.toLowerCase() : '';
+        const workflowMatch = workflowName && workflowName.includes(q);
+
         return d.title?.toLowerCase().includes(q) || 
                d.extracted_text?.toLowerCase().includes(q) ||
                d.status?.toLowerCase().includes(q) ||
-               (d.metadata_tag && d.metadata_tag.toLowerCase().includes(q));
+               (d.metadata_tag && d.metadata_tag.toLowerCase().includes(q)) ||
+               workflowMatch;
     });
 
     const navItems = [
