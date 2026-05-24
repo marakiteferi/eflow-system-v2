@@ -521,8 +521,14 @@ const WorkflowBuilderInner = () => {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [panelForceClosed, setPanelForceClosed] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
+  const [isBrowserOpen, setIsBrowserOpen] = useState(false);
   const [toast, setToast] = useState({ type: '', text: '' });
   const builderContainerRef = useRef(null);
+
+  // Custom confirm modal state (replaces native window.confirm)
+  const [confirmModal, setConfirmModal] = useState({ open: false, title: '', messages: [], onConfirm: null });
+  const showConfirm = (title, messages, onConfirm) => setConfirmModal({ open: true, title, messages, onConfirm });
+  const closeConfirm = () => setConfirmModal({ open: false, title: '', messages: [], onConfirm: null });
 
   const showToast = (type, text) => {
     setToast({ type, text });
@@ -552,7 +558,7 @@ const WorkflowBuilderInner = () => {
           api.get('/admin/departments')
         ]);
         setSavedWorkflows(wfRes.data);
-        setStaffList(staffRes.data.filter(u => u.role_id === 2 || u.role_name === 'Staff' || u.role_id > 3));
+        setStaffList(staffRes.data); // All system users can be manually assigned as approvers
         setRolesList(rolesRes.data);
         setDepartments(deptRes.data || []);
       } catch (err) { console.error('Failed to load builder data', err); }
@@ -665,36 +671,61 @@ const WorkflowBuilderInner = () => {
   };
 
   const [isValidating, setIsValidating] = useState(false);
-  const validateAndSave = async () => {
-    if (!workflowName) { showToast('error', 'Please enter a workflow name before saving.'); return; }
 
-    // Validation
+  // Checks validation rules and returns an array of error messages.
+  const getValidationErrors = () => {
     const errors = [];
     nodes.forEach(n => {
-      if (n.type === 'task' && !n.data.assignee) errors.push(`Approval node "${n.data.label}" has no assignee.`);
+      if (n.type === 'task') {
+        const hasAssignee = !!n.data.assignee;
+        const hasRole = n.data.assignmentStrategy === 'role_based' && !!n.data.roleId;
+        if (!hasAssignee && !hasRole) errors.push(`Approval node "${n.data.label}" has no assignee or role set.`);
+      }
       if (n.type === 'email' && !n.data.recipient) errors.push(`Email node "${n.data.label}" has no recipient.`);
     });
-    // Check for orphaned nodes
+    
     const connectedNodeIds = new Set();
     edges.forEach(e => { connectedNodeIds.add(e.source); connectedNodeIds.add(e.target); });
-    if (nodes.length > 1) { // Single node is an exception
+    if (nodes.length > 1) {
       nodes.forEach(n => {
         if (!connectedNodeIds.has(n.id)) errors.push(`Node "${n.data.label}" is disconnected.`);
       });
     }
+    return errors;
+  };
 
+  const saveDraft = () => {
+    if (!workflowName) { showToast('error', 'Please enter a workflow name before saving.'); return; }
+    doSave(false); // drafts are explicitly unpublished
+  };
+
+  const publishWorkflow = () => {
+    if (!workflowName) { showToast('error', 'Please enter a workflow name before publishing.'); return; }
+    const errors = getValidationErrors();
     if (errors.length > 0) {
-      if (!window.confirm("Validation Warnings:\n\n" + errors.join('\n') + "\n\nSave anyway?")) return;
+      showConfirm(
+        '⚠️ Validation Warnings',
+        [...errors, "Publishing with these errors might cause issues for users. Publish anyway?"],
+        () => doSave(true) 
+      );
+      return;
     }
+    doSave(true);
+  };
+
+  const doSave = async (isPublished) => {
+    closeConfirm();
 
     setIsValidating(true);
     try {
       const cleanedNodes = nodes.map(n => {
         const cleanData = { ...n.data };
         delete cleanData.staffList; // strip large redundant arrays before saving
+        delete cleanData.rolesList;
+        delete cleanData.departments;
         return { ...n, data: cleanData };
       });
-      const metadataObj = { allowedSubmitters, prerequisiteWorkflowId: prerequisiteWorkflowId || null };
+      const metadataObj = { allowedSubmitters, prerequisiteWorkflowId: prerequisiteWorkflowId || null, isPublished };
       if (clearanceWorkflowIds) {
         metadataObj.clearanceWorkflowIds = clearanceWorkflowIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
       }
@@ -723,9 +754,11 @@ const WorkflowBuilderInner = () => {
   };
 
   const handleClear = () => {
-    if (window.confirm('Clear canvas?')) {
-      setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowId(''); setClearanceWorkflowIds('');
-    }
+    showConfirm(
+      '🗑️ Clear Canvas',
+      ['This will remove all nodes and connections from the canvas. This cannot be undone.'],
+      () => { setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowId(''); setClearanceWorkflowIds(''); }
+    );
   }
 
   const toggleFullScreen = () => {
@@ -772,21 +805,118 @@ const WorkflowBuilderInner = () => {
         </div>
       )}
 
-      {/* TOP BAR */}
-      <div className="flex px-4 py-3 border-b border-gray-200 bg-white items-center gap-4 z-10 shrink-0 flex-wrap">
-        <select value={selectedWorkflowId} onChange={handleLoadWorkflow} className="px-3 py-1.5 border border-gray-300 rounded text-sm bg-gray-50 focus:outline-none focus:ring-1 focus:ring-blue-500 w-48">
-          <option value="">+ New Flow</option>
-          {savedWorkflows.map(wf => <option key={wf.id} value={wf.id}>{wf.name}</option>)}
-        </select>
+      {/* Custom Confirm Modal */}
+      {confirmModal.open && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-gray-100 overflow-hidden">
+            <div className="bg-amber-50 border-b border-amber-200 px-6 py-4">
+              <h3 className="font-black text-gray-900 text-lg">{confirmModal.title}</h3>
+            </div>
+            <div className="px-6 py-4">
+              <ul className="space-y-2">
+                {confirmModal.messages.map((msg, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-gray-700">
+                    <span className="text-amber-500 mt-0.5 shrink-0">⚠️</span>
+                    <span>{msg}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+              <button onClick={closeConfirm} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-200 transition-colors">Cancel</button>
+              <button
+                onClick={() => { if (confirmModal.onConfirm) confirmModal.onConfirm(); closeConfirm(); }}
+                className="px-4 py-2 rounded-lg text-sm font-bold text-white bg-amber-500 hover:bg-amber-600 transition-colors shadow-sm"
+              >Save Anyway</button>
+            </div>
+          </div>
+        </div>
+      )}
 
-        <div className="h-5 w-px bg-gray-300"></div>
+      {/* WORKFLOW BROWSER MODAL */}
+      {isBrowserOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[100] p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl border border-gray-100 overflow-hidden flex flex-col h-[80vh]">
+            <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Workflow Browser</h2>
+                <p className="text-sm text-gray-500 mt-1">Manage and open your existing workflows.</p>
+              </div>
+              <button onClick={() => setIsBrowserOpen(false)} className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 transition-colors">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-6 bg-gray-50/30">
+              {/* Drafts Section */}
+              <div className="mb-8">
+                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-400"></span> Drafts (Unpublished)
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {savedWorkflows.filter(wf => {
+                    const meta = (typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {})).metadata;
+                    return meta?.isPublished === false || meta?.isComplete === false;
+                  }).map(wf => (
+                    <div key={wf.id} onClick={() => { handleLoadWorkflow({ target: { value: wf.id }}); setIsBrowserOpen(false); }} className="bg-white border border-gray-200 rounded-xl p-4 hover:border-amber-400 hover:shadow-md transition-all cursor-pointer group">
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-lg group-hover:scale-110 transition-transform">📝</div>
+                        <span className="text-[10px] font-bold px-2 py-1 bg-gray-100 text-gray-500 rounded uppercase">Draft</span>
+                      </div>
+                      <h4 className="font-bold text-gray-900 truncate mb-1">{wf.name}</h4>
+                      <p className="text-xs text-gray-500">ID: {wf.id}</p>
+                    </div>
+                  ))}
+                  {savedWorkflows.filter(wf => {
+                    const meta = (typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {})).metadata;
+                    return meta?.isPublished === false || meta?.isComplete === false;
+                  }).length === 0 && (
+                    <div className="col-span-full py-6 text-center text-gray-400 text-sm border-2 border-dashed border-gray-200 rounded-xl">No drafts found.</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Published Section */}
+              <div>
+                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span> Published & Active
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {savedWorkflows.filter(wf => {
+                    const meta = (typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {})).metadata;
+                    return meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
+                  }).map(wf => (
+                    <div key={wf.id} onClick={() => { handleLoadWorkflow({ target: { value: wf.id }}); setIsBrowserOpen(false); }} className="bg-white border border-gray-200 rounded-xl p-4 hover:border-emerald-400 hover:shadow-md transition-all cursor-pointer group">
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg group-hover:scale-110 transition-transform">🚀</div>
+                        <span className="text-[10px] font-bold px-2 py-1 bg-emerald-50 text-emerald-600 rounded uppercase">Live</span>
+                      </div>
+                      <h4 className="font-bold text-gray-900 truncate mb-1">{wf.name}</h4>
+                      <p className="text-xs text-gray-500">ID: {wf.id}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TOP BAR */}
+      <div className="flex px-4 py-3 border-b border-gray-200 bg-white items-center gap-4 z-10 shrink-0 flex-wrap shadow-sm">
+        <button onClick={() => setIsBrowserOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg text-sm font-bold text-gray-700 transition-colors">
+          <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+          Browse Workflows
+        </button>
+
+        <div className="h-6 w-px bg-gray-200"></div>
 
         <input
           type="text" placeholder="Enter Workflow Name..." value={workflowName} onChange={(e) => setWorkflowName(e.target.value)}
-          className="flex-grow max-w-[200px] px-3 py-1.5 border-none text-lg font-bold text-gray-800 placeholder-gray-400 focus:ring-0 outline-none"
+          className="flex-grow max-w-[250px] px-3 py-1.5 border-none text-lg font-black text-gray-800 placeholder-gray-300 focus:ring-0 outline-none bg-transparent"
         />
 
-        <div className="h-5 w-px bg-gray-300 hidden sm:block"></div>
+        <div className="h-6 w-px bg-gray-200 hidden sm:block"></div>
 
         <div className="flex items-center gap-2 relative group hidden sm:flex">
           <span className="text-xs font-bold text-gray-500">Allowed Roles:</span>
@@ -880,9 +1010,12 @@ const WorkflowBuilderInner = () => {
           )}
         </button>
 
-        <button onClick={handleClear} className="text-gray-500 hover:text-red-500 font-medium text-sm px-3">Clear</button>
-        <button onClick={validateAndSave} disabled={isValidating} className={`bg-indigo-600 text-white px-5 py-2 rounded font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-indigo-700'}`}>
-          {selectedWorkflowId ? 'Update Workflow' : 'Save Workflow'}
+        <button onClick={handleClear} className="text-gray-400 hover:text-red-500 font-medium text-sm px-2">Clear</button>
+        <button onClick={saveDraft} disabled={isValidating} className={`bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-gray-50'}`}>
+          Save Draft
+        </button>
+        <button onClick={publishWorkflow} disabled={isValidating} className={`bg-emerald-600 text-white px-5 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-emerald-700'}`}>
+          {selectedWorkflowId ? 'Update & Publish' : 'Publish Live'}
         </button>
       </div>
 

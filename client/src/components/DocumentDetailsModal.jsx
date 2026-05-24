@@ -388,7 +388,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                   </div>
                 )}
 
-                {(isAssignee || isAdmin) && (
+                {(isAssignee) && (
                   <div className="bg-gray-50 p-3 rounded border border-gray-200">
                     <h4 className="text-xs font-bold text-gray-600 uppercase mb-2">Attach Supporting File (PDF only, max 10 MB)</h4>
                     <div className="flex flex-col gap-2">

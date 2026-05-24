@@ -78,7 +78,7 @@ const Dashboard = () => {
   const canCreateWorkflows = isSuperAdmin || (isCustomRole && user?.can_create_workflows);
   const fetchData = useCallback(async () => {
     try {
-      if (isStudent || isStaffOrReviewer) {
+      if (isStudent || isStaffOrReviewer || isSuperAdmin || isCustomRole) {
         const docResponse = await api.get('/documents');
         setDocuments(docResponse.data);
       }
@@ -257,7 +257,10 @@ const Dashboard = () => {
     const statusMatch = doc.status?.toLowerCase().includes(query);
     const idString = doc.id ? doc.id.toString() : '';
     const idMatch = idString.includes(query) || `tsk-${idString.substring(0, 4)}`.includes(query);
-    return titleMatch || textMatch || statusMatch || idMatch;
+    const workflowName = doc.workflow_id ? workflows.find(w => w.id === doc.workflow_id)?.name?.toLowerCase() : '';
+    const workflowMatch = workflowName && workflowName.includes(query);
+    
+    return titleMatch || textMatch || statusMatch || idMatch || workflowMatch;
   });
 
   // Helper: get allowed tags array from the current workflow node for a given document
@@ -361,7 +364,7 @@ const Dashboard = () => {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="flex justify-between items-center p-6 border-b border-gray-100">
             <h3 className="text-lg font-bold text-gray-900">Recent Items</h3>
-            <button className="text-sm text-blue-600 font-bold hover:underline">View All</button>
+            <button onClick={() => setActiveTab('tasks')} className="text-sm text-blue-600 font-bold hover:underline">View All</button>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-100">
@@ -544,10 +547,19 @@ const Dashboard = () => {
   };
 
   const renderServicesView = () => {
-    // Filter workflows based on user's role 
+    // Filter workflows based on user's role
+    // Admins can see all workflows regardless of allowedSubmitters restriction
     const staffWorkflows = workflows.filter(wf => {
       const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
-      const allowed = flowData.metadata?.allowedSubmitters || [];
+      const meta = flowData.metadata || {};
+      
+      // Drafts (Unpublished workflows) are hidden from the services list entirely
+      const isDraft = meta.isPublished === false || (meta.isPublished === undefined && meta.isComplete === false);
+      if (isDraft) return false;
+
+      if (canManageUsers || canCreateWorkflows) return true; // Admins see all live workflows
+
+      const allowed = meta.allowedSubmitters || [];
       if (allowed.length === 0) return true; // Global service
       return allowed.includes(user.role_id);
     });
@@ -605,7 +617,28 @@ const Dashboard = () => {
   const renderNotificationsView = () => {
     // Dynamic notifications:
     const mySubmissions = filteredDocs.filter(d => d.submitter_id === user.id);
-    const assignedTasks = filteredDocs.filter(d => d.status === 'Pending' && d.submitter_id !== user.id);
+    const assignedTasks = filteredDocs.filter(d => {
+      if (d.status !== 'Pending' || d.submitter_id === user.id) return false;
+      
+      const isDirectAssignee = d.current_assignee_id === user?.id;
+      const isRoleAssignee = !d.current_assignee_id && d.current_role_id === user?.role_id && (!d.current_department_id || d.current_department_id === user?.department_id);
+      
+      const branchData = d.parallel_branch_data;
+      let isParallelAssignee = false;
+      if (branchData && Array.isArray(branchData)) {
+          if (branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
+          isParallelAssignee = branchData.some(b => {
+              if (b.status !== 'Pending') return false;
+              if (b.assigneeId === user?.id) return true;
+              if (b.roleId === user?.role_id && (!b.departmentId || b.departmentId === user?.department_id)) return true;
+              return false;
+          });
+      } else if (branchData && branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) {
+          return false;
+      }
+
+      return isDirectAssignee || isRoleAssignee || isParallelAssignee;
+    });
 
     const rejected = mySubmissions.filter(d => d.status === 'Rejected').slice(0, 5);
     const approved = mySubmissions.filter(d => d.status === 'Approved').slice(0, 5);
@@ -1126,11 +1159,24 @@ const Dashboard = () => {
               <svg className="w-5 h-5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
               Notifications
             </div>
-            {filteredDocs.filter(d => d.status === 'Pending' && d.submitter_id !== user.id).length > 0 && (
-              <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">
-                {filteredDocs.filter(d => d.status === 'Pending' && d.submitter_id !== user.id).length}
-              </span>
-            )}
+            {(() => {
+              const myRejected = filteredDocs.filter(d => d.submitter_id === user.id && d.status === 'Rejected').length;
+              const myApproved = filteredDocs.filter(d => d.submitter_id === user.id && d.status === 'Approved').length;
+              const myTasks = filteredDocs.filter(d => {
+                if (d.status !== 'Pending' || d.submitter_id === user.id) return false;
+                const isDirectAssignee = d.current_assignee_id === user?.id;
+                const isRoleAssignee = !d.current_assignee_id && d.current_role_id === user?.role_id && (!d.current_department_id || d.current_department_id === user?.department_id);
+                const branchData = d.parallel_branch_data;
+                const isParallelAssignee = Array.isArray(branchData) && branchData.some(b =>
+                  b.status === 'Pending' && (b.assigneeId === user?.id || (b.roleId === user?.role_id && (!b.departmentId || b.departmentId === user?.department_id)))
+                );
+                return isDirectAssignee || isRoleAssignee || isParallelAssignee;
+              }).length;
+              const total = myRejected + myTasks;
+              return total > 0 ? (
+                <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">{total}</span>
+              ) : null;
+            })()}
           </button>
 
           <button onClick={() => setActiveTab('tasks')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'tasks' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
