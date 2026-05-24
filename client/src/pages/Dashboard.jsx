@@ -7,6 +7,7 @@ import DocumentDetailsModal from '../components/DocumentDetailsModal';
 import RoleManager from '../components/RoleManager';
 import StudentPortal from './StudentPortal';
 import api from '../api';
+import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 const Dashboard = () => {
   const { user, logout } = useContext(AuthContext);
@@ -723,6 +724,7 @@ const Dashboard = () => {
             {(!canManageUsers && !canCreateWorkflows) ? null : (
               <>
                 {adminView === 'overview' && adminStats && (
+                  <>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200 border-l-4 border-l-blue-500">
                       <h4 className="text-gray-500 text-sm font-medium uppercase tracking-wider mb-2">Total Documents</h4>
@@ -741,6 +743,69 @@ const Dashboard = () => {
                       <p className="text-3xl font-bold text-gray-800">{adminStats.documents.rejected}</p>
                     </div>
                   </div>
+                  
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                    <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm">
+                      <h3 className="text-lg font-bold text-gray-900 mb-4">Document Status Breakdown</h3>
+                      <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={[
+                                { name: 'Approved', value: adminStats.documents.approved },
+                                { name: 'Pending', value: adminStats.documents.pending },
+                                { name: 'Rejected', value: adminStats.documents.rejected }
+                              ].filter(d => d.value > 0)}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={60}
+                              outerRadius={80}
+                              paddingAngle={5}
+                              dataKey="value"
+                            >
+                              { [
+                                { name: 'Approved', color: '#10B981' },
+                                { name: 'Pending', color: '#FBBF24' },
+                                { name: 'Rejected', color: '#EF4444' }
+                              ].filter(c => {
+                                 if (c.name === 'Approved' && adminStats.documents.approved > 0) return true;
+                                 if (c.name === 'Pending' && adminStats.documents.pending > 0) return true;
+                                 if (c.name === 'Rejected' && adminStats.documents.rejected > 0) return true;
+                                 return false;
+                              }).map((entry, index) => (
+                                <Cell key={`cell-${index}`} fill={entry.color} />
+                              )) }
+                            </Pie>
+                            <RechartsTooltip />
+                            <Legend />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm">
+                      <h3 className="text-lg font-bold text-gray-900 mb-4">System Entities Overview</h3>
+                      <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={[
+                              { name: 'Users', count: adminStats.users },
+                              { name: 'Workflows', count: adminStats.workflows },
+                              { name: 'Docs', count: adminStats.documents.total }
+                            ]}
+                            margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#6B7280'}} />
+                            <YAxis axisLine={false} tickLine={false} tick={{fill: '#6B7280'}} allowDecimals={false} />
+                            <RechartsTooltip cursor={{ fill: '#F3F4F6' }} contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'}} />
+                            <Bar dataKey="count" fill="#4F46E5" radius={[4, 4, 0, 0]} maxBarSize={60} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
+                  </>
                 )}
 
                 {adminView === 'workflows' && canCreateWorkflows && <WorkflowBuilder />}
@@ -958,6 +1023,77 @@ const Dashboard = () => {
     );
   };
 
+  const renderSearchResultsView = () => {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Search Results for "{searchQuery}"</h2>
+            <p className="text-gray-500 mt-1">Found {filteredDocs.length} items matching your query.</p>
+          </div>
+          <button onClick={() => setSearchQuery('')} className="text-sm font-semibold text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-4 py-2 rounded-lg transition-colors">Clear Search</button>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-100">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type / ID</th>
+                  <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Title & Text Match</th>
+                  <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                  <th className="px-6 py-4 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Action</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-100 text-sm">
+                {filteredDocs.length === 0 ? (
+                  <tr><td colSpan="4" className="px-6 py-12 text-center text-gray-500">No results found for "{searchQuery}".</td></tr>
+                ) : (
+                  filteredDocs.map(doc => {
+                    const isTask = doc.status === 'Pending' && doc.submitter_id !== user?.id;
+                    return (
+                      <tr key={doc.id} className="hover:bg-gray-50 transition-colors group">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                          {isTask ? (
+                            <span className="inline-flex items-center gap-1.5 text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
+                              Task #{doc.id.toString().substring(0, 4)}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 text-blue-600 bg-blue-50 px-2.5 py-1 rounded-md">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                              Doc #{doc.id.toString().substring(0, 4)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="font-bold text-gray-900 cursor-pointer group-hover:text-blue-600" onClick={() => setViewingDocument(doc)}>{doc.title}</p>
+                          {doc.extracted_text && doc.extracted_text.toLowerCase().includes(searchQuery.toLowerCase()) && (
+                            <p className="text-xs text-gray-500 mt-1 line-clamp-2 italic">
+                              "... {doc.extracted_text.substring(Math.max(0, doc.extracted_text.toLowerCase().indexOf(searchQuery.toLowerCase()) - 30), doc.extracted_text.toLowerCase().indexOf(searchQuery.toLowerCase()) + 60)} ..."
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {doc.status === 'Pending' && <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-orange-100 text-orange-800"><span className="w-1.5 h-1.5 rounded-full bg-orange-500 mr-1.5"></span>Pending Review</span>}
+                          {doc.status === 'Approved' && <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800"><span className="w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5"></span>Approved</span>}
+                          {doc.status === 'Rejected' && <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800"><span className="w-1.5 h-1.5 rounded-full bg-red-500 mr-1.5"></span>Rejected</span>}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-center">
+                          <button onClick={() => setViewingDocument(doc)} className="text-blue-600 hover:text-white px-3 py-1.5 rounded text-xs font-bold border border-blue-200 hover:bg-blue-600 transition-colors">View Details</button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ── Students get redirected to the new dedicated student portal ──────────
   if (isStudent) return <StudentPortal />;
 
@@ -1071,11 +1207,15 @@ const Dashboard = () => {
         {/* Dynamic Page Content */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-8 relative">
           <div className="max-w-[1400px] mx-auto">
-            {activeTab === 'dashboard' && renderDashboardView()}
-            {activeTab === 'services' && renderServicesView()}
-            {activeTab === 'tasks' && renderTasksView()}
-            {activeTab === 'notifications' && renderNotificationsView()}
-            {activeTab === 'admin' && renderAdminSetupView()}
+            {searchQuery ? renderSearchResultsView() : (
+              <>
+                {activeTab === 'dashboard' && renderDashboardView()}
+                {activeTab === 'services' && renderServicesView()}
+                {activeTab === 'tasks' && renderTasksView()}
+                {activeTab === 'notifications' && renderNotificationsView()}
+                {activeTab === 'admin' && renderAdminSetupView()}
+              </>
+            )}
           </div>
         </main>
 

@@ -37,9 +37,15 @@ transporter.verify((error, success) => {
 // Universal Email Helper
 const sendNotificationEmail = async (userId, subject, message) => {
     try {
-        const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [userId]);
+        const userQuery = await pool.query('SELECT email, name, email_notifications FROM users WHERE id = $1', [userId]);
         if (userQuery.rows.length > 0) {
-            const { email, name } = userQuery.rows[0];
+            const { email, name, email_notifications } = userQuery.rows[0];
+            
+            if (email_notifications === false) {
+                console.log(`\n🚫 NOTIFICATION SKIPPED FOR ${email} (Notifications disabled by user)`);
+                return;
+            }
+
             console.log(`\n📧 SENDING EMAIL TO: ${email} | SUBJECT: ${subject}`);
             const info = await transporter.sendMail({
                 from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
