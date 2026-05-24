@@ -526,9 +526,9 @@ const WorkflowBuilderInner = () => {
   const builderContainerRef = useRef(null);
 
   // Custom confirm modal state (replaces native window.confirm)
-  const [confirmModal, setConfirmModal] = useState({ open: false, title: '', messages: [], onConfirm: null });
-  const showConfirm = (title, messages, onConfirm) => setConfirmModal({ open: true, title, messages, onConfirm });
-  const closeConfirm = () => setConfirmModal({ open: false, title: '', messages: [], onConfirm: null });
+  const [confirmModal, setConfirmModal] = useState({ open: false, title: '', messages: [], onConfirm: null, confirmText: 'Confirm', type: 'warning' });
+  const showConfirm = (title, messages, onConfirm, confirmText = 'Confirm', type = 'warning') => setConfirmModal({ open: true, title, messages, onConfirm, confirmText, type });
+  const closeConfirm = () => setConfirmModal({ open: false, title: '', messages: [], onConfirm: null, confirmText: 'Confirm', type: 'warning' });
 
   const showToast = (type, text) => {
     setToast({ type, text });
@@ -706,7 +706,8 @@ const WorkflowBuilderInner = () => {
       showConfirm(
         '⚠️ Validation Warnings',
         [...errors, "Publishing with these errors might cause issues for users. Publish anyway?"],
-        () => doSave(true) 
+        () => doSave(true),
+        'Publish Anyway'
       );
       return;
     }
@@ -757,9 +758,44 @@ const WorkflowBuilderInner = () => {
     showConfirm(
       '🗑️ Clear Canvas',
       ['This will remove all nodes and connections from the canvas. This cannot be undone.'],
-      () => { setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowId(''); setClearanceWorkflowIds(''); }
+      () => { setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowId(''); setClearanceWorkflowIds(''); },
+      'Clear Canvas',
+      'danger'
     );
   }
+
+  const handleDeleteWorkflow = () => {
+    if (!selectedWorkflowId) return;
+    showConfirm(
+      '⚠️ Delete Workflow',
+      ['Are you sure you want to permanently delete this workflow?', 'This action cannot be undone. If it has historical records, it will be rejected by the server.'],
+      async () => {
+        try {
+          await api.delete(`/workflows/${selectedWorkflowId}`);
+          showToast('success', 'Workflow deleted successfully!');
+          // Clear current
+          setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowId(''); setClearanceWorkflowIds(''); setSelectedWorkflowId(''); setWorkflowName('');
+          // Refetch
+          const wfRes = await api.get('/workflows');
+          setSavedWorkflows(wfRes.data);
+        } catch (err) {
+          if (err.response && err.response.status === 400) {
+            showConfirm(
+              '⛔ Deletion Rejected',
+              [err.response.data.message || 'Cannot delete a workflow with active or historical records.', 'Please Unpublish (Take Down) the workflow instead to preserve analytics and history.'],
+              null,
+              'Understood',
+              'error'
+            );
+          } else {
+            showToast('error', 'An error occurred while deleting the workflow.');
+          }
+        }
+      },
+      'Delete Permanently',
+      'danger'
+    );
+  };
 
   const toggleFullScreen = () => {
     if (!document.fullscreenElement) {
@@ -807,27 +843,31 @@ const WorkflowBuilderInner = () => {
 
       {/* Custom Confirm Modal */}
       {confirmModal.open && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4 animate-fade-in">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-gray-100 overflow-hidden">
-            <div className="bg-amber-50 border-b border-amber-200 px-6 py-4">
-              <h3 className="font-black text-gray-900 text-lg">{confirmModal.title}</h3>
+            <div className={`border-b px-6 py-4 ${confirmModal.type === 'error' || confirmModal.type === 'danger' ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+              <h3 className={`font-black text-lg ${confirmModal.type === 'error' || confirmModal.type === 'danger' ? 'text-red-900' : 'text-gray-900'}`}>{confirmModal.title}</h3>
             </div>
             <div className="px-6 py-4">
               <ul className="space-y-2">
                 {confirmModal.messages.map((msg, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm text-gray-700">
-                    <span className="text-amber-500 mt-0.5 shrink-0">⚠️</span>
+                    <span className={`mt-0.5 shrink-0 ${confirmModal.type === 'error' || confirmModal.type === 'danger' ? 'text-red-500' : 'text-amber-500'}`}>
+                      {confirmModal.type === 'error' || confirmModal.type === 'danger' ? '❌' : '⚠️'}
+                    </span>
                     <span>{msg}</span>
                   </li>
                 ))}
               </ul>
             </div>
             <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
-              <button onClick={closeConfirm} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-200 transition-colors">Cancel</button>
+              {confirmModal.onConfirm && (
+                <button onClick={closeConfirm} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-200 transition-colors">Cancel</button>
+              )}
               <button
                 onClick={() => { if (confirmModal.onConfirm) confirmModal.onConfirm(); closeConfirm(); }}
-                className="px-4 py-2 rounded-lg text-sm font-bold text-white bg-amber-500 hover:bg-amber-600 transition-colors shadow-sm"
-              >Save Anyway</button>
+                className={`px-4 py-2 rounded-lg text-sm font-bold text-white transition-colors shadow-sm ${confirmModal.type === 'error' || confirmModal.type === 'danger' ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-500 hover:bg-amber-600'}`}
+              >{confirmModal.confirmText}</button>
             </div>
           </div>
         </div>
@@ -908,6 +948,19 @@ const WorkflowBuilderInner = () => {
           <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
           Browse Workflows
         </button>
+
+        {selectedWorkflowId && (() => {
+          const loadedWorkflow = savedWorkflows.find(w => w.id === parseInt(selectedWorkflowId));
+          if (!loadedWorkflow) return null;
+          const meta = (typeof loadedWorkflow.flow_structure === 'string' ? JSON.parse(loadedWorkflow.flow_structure) : loadedWorkflow.flow_structure).metadata;
+          const isPublished = meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
+          return (
+            <span className={`px-2 py-1 text-[10px] font-bold rounded uppercase flex items-center gap-1 ${isPublished ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-500'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${isPublished ? 'bg-emerald-400' : 'bg-gray-400'}`}></span>
+              {isPublished ? 'Live' : 'Draft'}
+            </span>
+          );
+        })()}
 
         <div className="h-6 w-px bg-gray-200"></div>
 
@@ -1010,10 +1063,35 @@ const WorkflowBuilderInner = () => {
           )}
         </button>
 
+        {selectedWorkflowId && (
+          <button onClick={handleDeleteWorkflow} className="text-gray-400 hover:text-red-500 p-1.5 rounded bg-gray-50 border border-gray-200 mr-2" title="Delete Workflow">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+          </button>
+        )}
+
         <button onClick={handleClear} className="text-gray-400 hover:text-red-500 font-medium text-sm px-2">Clear</button>
-        <button onClick={saveDraft} disabled={isValidating} className={`bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-gray-50'}`}>
-          Save Draft
-        </button>
+        
+        {(() => {
+          let isLoadedWorkflowPublished = false;
+          if (selectedWorkflowId) {
+            const loadedWorkflow = savedWorkflows.find(w => w.id === parseInt(selectedWorkflowId));
+            if (loadedWorkflow) {
+              const meta = (typeof loadedWorkflow.flow_structure === 'string' ? JSON.parse(loadedWorkflow.flow_structure) : loadedWorkflow.flow_structure).metadata;
+              isLoadedWorkflowPublished = meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
+            }
+          }
+          
+          return isLoadedWorkflowPublished ? (
+            <button onClick={saveDraft} disabled={isValidating} className={`bg-amber-100 text-amber-700 px-4 py-2 rounded-lg text-sm font-bold transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-amber-200'}`}>
+              Unpublish (Take Down)
+            </button>
+          ) : (
+            <button onClick={saveDraft} disabled={isValidating} className={`bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-gray-50'}`}>
+              Save Draft
+            </button>
+          );
+        })()}
+
         <button onClick={publishWorkflow} disabled={isValidating} className={`bg-emerald-600 text-white px-5 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-emerald-700'}`}>
           {selectedWorkflowId ? 'Update & Publish' : 'Publish Live'}
         </button>

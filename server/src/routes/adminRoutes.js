@@ -24,6 +24,8 @@ const pool = new Pool({
     password: process.env.DB_PASSWORD, port: process.env.DB_PORT,
 });
 
+const adminOtpStore = new Map();
+
 // ==========================================
 // MIDDLEWARE
 // ==========================================
@@ -254,6 +256,51 @@ router.put('/roles/:id/fallback', authenticateToken, verifyAdmin, async (req, re
 });
 
 // ==========================================
+// ADMIN OTP API
+// ==========================================
+
+router.post('/request-otp', authenticateToken, verifyAdmin, async (req, res) => {
+    try {
+        const existingData = adminOtpStore.get(req.user.id);
+        if (existingData && existingData.generatedAt) {
+            const timeSinceGenerated = Date.now() - existingData.generatedAt;
+            if (timeSinceGenerated < 2 * 60 * 1000) {
+                return res.status(429).json({ message: 'Please wait 2 minutes before requesting a new code.' });
+            }
+        }
+
+        const otp = crypto.randomInt(100000, 999999).toString();
+        adminOtpStore.set(req.user.id, { otp, expires: Date.now() + 5 * 60000, generatedAt: Date.now() });
+
+        const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [req.user.id]);
+        const { email, name } = userQuery.rows[0];
+
+        console.log(`\n🔑 DEV MODE - ADMIN OTP GENERATED: ${otp}\n`);
+
+        try {
+            await transporter.sendMail({
+                from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
+                to: email,
+                subject: 'Your E-flow Admin Verification Code',
+                html: `<p>Hello ${name},</p>
+                       <p>Your one-time verification code for an administrative action is: <b style="font-size:24px">${otp}</b></p>
+                       <p>This code expires in 5 minutes.</p>`
+            });
+            res.status(200).json({ message: 'OTP sent to your email' });
+        } catch (emailErr) {
+            console.error('Email failed:', emailErr.message);
+            if (process.env.NODE_ENV !== 'production') {
+                return res.status(200).json({ message: 'Email failed (dev mode) — OTP: ' + otp });
+            }
+            throw emailErr;
+        }
+    } catch (err) {
+        console.error('OTP error:', err);
+        res.status(500).json({ message: 'Error generating OTP' });
+    }
+});
+
+// ==========================================
 // USERS API
 // ==========================================
 router.get('/users', authenticateToken, verifyAdmin, async (req, res) => {
@@ -274,8 +321,18 @@ router.get('/users', authenticateToken, verifyAdmin, async (req, res) => {
 
 // Pitfall 4 FIX: Circular supervisor detection at save time
 router.put('/users/:id/role', authenticateToken, verifyAdmin, async (req, res) => {
-    const { role_id, department_id, supervisor_id } = req.body;
+    const { role_id, department_id, supervisor_id, otp } = req.body;
     const userId = parseInt(req.params.id, 10);
+
+    const storedData = adminOtpStore.get(req.user.id);
+    if (!storedData || storedData.otp !== otp) {
+        return res.status(400).json({ message: 'Invalid or incorrect OTP' });
+    }
+    if (Date.now() > storedData.expires) {
+        adminOtpStore.delete(req.user.id);
+        return res.status(400).json({ message: 'OTP has expired' });
+    }
+    adminOtpStore.delete(req.user.id);
 
     // If a supervisor is being set, validate there's no cycle BEFORE writing
     if (supervisor_id) {
@@ -396,7 +453,18 @@ router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.sing
 });
 
 router.post('/users/import-commit', authenticateToken, verifyAdmin, async (req, res) => {
-    const { validUsers } = req.body;
+    const { validUsers, otp } = req.body;
+
+    const storedData = adminOtpStore.get(req.user.id);
+    if (!storedData || storedData.otp !== otp) {
+        return res.status(400).json({ message: 'Invalid or incorrect OTP' });
+    }
+    if (Date.now() > storedData.expires) {
+        adminOtpStore.delete(req.user.id);
+        return res.status(400).json({ message: 'OTP has expired' });
+    }
+    adminOtpStore.delete(req.user.id);
+
     if (!validUsers || !Array.isArray(validUsers) || validUsers.length === 0) {
         return res.status(400).json({ message: 'No valid users provided to import.' });
     }

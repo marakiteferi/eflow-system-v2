@@ -32,6 +32,13 @@ const Dashboard = () => {
   const [adminStats, setAdminStats] = useState(null);
   const [dynamicRoles, setDynamicRoles] = useState([]);
 
+  // NEW: Admin OTP Modal State
+  const [showAdminOtpModal, setShowAdminOtpModal] = useState(false);
+  const [adminOtpInput, setAdminOtpInput] = useState('');
+  const [adminOtpAction, setAdminOtpAction] = useState(null);
+  const [isAdminRequestingOtp, setIsAdminRequestingOtp] = useState(false);
+  const [isAdminVerifyingOtp, setIsAdminVerifyingOtp] = useState(false);
+
   // NEW: Workflows state for the checklist logic
   const [workflows, setWorkflows] = useState([]);
 
@@ -125,13 +132,47 @@ const Dashboard = () => {
 
   const handleRoleChange = async (targetUserId, newRoleId) => {
     if (targetUserId === user.id) { showToast('error', 'You cannot change your own role!'); return; }
+    
+    setIsAdminRequestingOtp(true);
     try {
-      await api.put(`/admin/users/${targetUserId}/role`, { role_id: parseInt(newRoleId) });
-      showToast('success', 'User role updated!');
-      fetchData();
-    } catch (error) {
-      console.error('Failed to update role', error);
-      showToast('error', 'Failed to update role.');
+      await api.post('/admin/request-otp');
+      setAdminOtpAction({ type: 'role_change', payload: { targetUserId, newRoleId } });
+      setAdminOtpInput('');
+      setShowAdminOtpModal(true);
+    } catch (err) {
+      console.error(err);
+      showToast('error', err.response?.data?.message || 'Failed to request Admin OTP');
+    } finally {
+      setIsAdminRequestingOtp(false);
+    }
+  };
+
+  const handleAdminOtpSubmit = async () => {
+    if (!adminOtpAction) return;
+    setIsAdminVerifyingOtp(true);
+    
+    try {
+      if (adminOtpAction.type === 'role_change') {
+        const { targetUserId, newRoleId } = adminOtpAction.payload;
+        await api.put(`/admin/users/${targetUserId}/role`, { role_id: parseInt(newRoleId), otp: adminOtpInput });
+        showToast('success', 'User role updated!');
+        fetchData();
+      } else if (adminOtpAction.type === 'bulk_import') {
+        const { validUsers } = adminOtpAction.payload;
+        const res = await api.post('/admin/users/import-commit', { validUsers, otp: adminOtpInput });
+        showToast('success', res.data.message);
+        setImportPreview(null);
+        setImportFile(null);
+        fetchData();
+      }
+      setShowAdminOtpModal(false);
+      setAdminOtpInput('');
+      setAdminOtpAction(null);
+    } catch (err) {
+      console.error('Admin OTP Action Failed', err);
+      showToast('error', err.response?.data?.message || 'Verification failed. Incorrect OTP.');
+    } finally {
+      setIsAdminVerifyingOtp(false);
     }
   };
 
@@ -939,13 +980,14 @@ const Dashboard = () => {
                                       showToast('error', 'No valid users to import.');
                                       return;
                                     }
-                                    const res = await api.post('/admin/users/import-commit', { validUsers });
-                                    showToast('success', res.data.message);
-                                    setImportPreview(null);
-                                    setImportFile(null);
-                                    fetchData(); // refresh user list
+                                    
+                                    await api.post('/admin/request-otp');
+                                    setAdminOtpAction({ type: 'bulk_import', payload: { validUsers } });
+                                    setAdminOtpInput('');
+                                    setShowAdminOtpModal(true);
+                                    
                                   } catch (err) {
-                                    showToast('error', err.response?.data?.message || 'Failed to import users.');
+                                    showToast('error', err.response?.data?.message || 'Failed to request Admin OTP.');
                                   } finally {
                                     setIsImporting(false);
                                   }
@@ -1239,6 +1281,41 @@ const Dashboard = () => {
             </div>
           </div>
         </header>
+
+        {/* NEW: Admin OTP Modal */}
+        {showAdminOtpModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 relative">
+              <h2 className="text-xl font-bold mb-4">Admin Security Verification</h2>
+              <p className="text-sm text-gray-600 mb-6">
+                To proceed with this sensitive action, please enter the 6-digit verification code sent to your email.
+              </p>
+              <input
+                type="text"
+                placeholder="000000"
+                maxLength={6}
+                value={adminOtpInput}
+                onChange={(e) => setAdminOtpInput(e.target.value.replace(/\D/g, ''))}
+                className="w-full text-center text-3xl tracking-widest font-mono p-4 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none mb-6"
+              />
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setShowAdminOtpModal(false); setAdminOtpAction(null); setAdminOtpInput(''); }}
+                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAdminOtpSubmit}
+                  disabled={adminOtpInput.length !== 6 || isAdminVerifyingOtp}
+                  className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg disabled:opacity-50 transition-colors"
+                >
+                  {isAdminVerifyingOtp ? 'Verifying...' : 'Verify & Proceed'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Global Toast Notification */}
         {toastMessage.text && (
