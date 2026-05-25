@@ -526,6 +526,30 @@ router.get('/verify-link/:token', async (req, res) => {
     }
 });
 
+// GET: Securely download document via public verification link
+router.get('/verify-link/:token/download', async (req, res) => {
+    const token = req.params.token;
+    try {
+        const linkQuery = await pool.query('SELECT * FROM document_verification_links WHERE token = $1', [token]);
+        if (linkQuery.rows.length === 0) return res.status(404).json({ message: 'Invalid verification link.' });
+        
+        const link = linkQuery.rows[0];
+        if (link.is_revoked) return res.status(403).json({ message: 'Link revoked.' });
+        if (link.expires_at && new Date() > new Date(link.expires_at)) return res.status(403).json({ message: 'Link expired.' });
+        if (link.max_uses && link.access_count > link.max_uses) return res.status(403).json({ message: 'Max uses reached.' });
+
+        const docQuery = await pool.query('SELECT file_path, title FROM documents WHERE id = $1', [link.document_id]);
+        if (docQuery.rows.length === 0) return res.status(404).json({ message: 'Document not found.' });
+
+        const doc = docQuery.rows[0];
+        if (!fs.existsSync(doc.file_path)) return res.status(404).json({ message: 'File not found on server.' });
+
+        res.download(doc.file_path, `${doc.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.pdf`);
+    } catch (err) {
+        console.error('Download error:', err);
+        res.status(500).json({ message: 'Server error during download' });
+    }
+});
 // 5. PATCH: Set metadata tag on a document (for staff to trigger condition nodes)
 router.patch('/:id/tag', authenticateToken, async (req, res) => {
     const { tag } = req.body;
@@ -721,6 +745,17 @@ router.post('/:id/verification-link', authenticateToken, async (req, res) => {
     const documentId = req.params.id;
     const { purpose, expires_in_days, max_uses } = req.body;
 
+    // Validation
+    const parsedExpires = expires_in_days ? parseInt(expires_in_days) : null;
+    const parsedMaxUses = max_uses ? parseInt(max_uses) : null;
+
+    if (parsedExpires !== null && parsedExpires <= 0) {
+        return res.status(400).json({ message: 'Expiration days must be a positive number.' });
+    }
+    if (parsedMaxUses !== null && (parsedMaxUses <= 0 || parsedMaxUses > 100)) {
+        return res.status(400).json({ message: 'Max uses must be a positive number between 1 and 100.' });
+    }
+
     try {
         // Verify submitter
         const docQuery = await pool.query('SELECT submitter_id FROM documents WHERE id = $1', [documentId]);
@@ -732,13 +767,13 @@ router.post('/:id/verification-link', authenticateToken, async (req, res) => {
 
         const token = crypto.randomBytes(32).toString('hex');
         let expiresAt = null;
-        if (expires_in_days) {
-            expiresAt = new Date(Date.now() + parseInt(expires_in_days) * 24 * 60 * 60 * 1000);
+        if (parsedExpires) {
+            expiresAt = new Date(Date.now() + parsedExpires * 24 * 60 * 60 * 1000);
         }
 
         await pool.query(
             'INSERT INTO document_verification_links (document_id, token, purpose, expires_at, max_uses, created_by) VALUES ($1, $2, $3, $4, $5, $6)',
-            [documentId, token, purpose || null, expiresAt, max_uses ? parseInt(max_uses) : null, req.user.id]
+            [documentId, token, purpose || null, expiresAt, parsedMaxUses, req.user.id]
         );
 
         await pool.query(

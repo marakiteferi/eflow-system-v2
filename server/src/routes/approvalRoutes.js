@@ -525,8 +525,9 @@ router.post('/approve', authenticateToken, async (req, res) => {
                     'UPDATE documents SET parallel_branch_data = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
                     [documentId]
                 );
-                // Override current_node_id to the parallel node so the walker can advance past it
-                doc.current_node_id = existingBranches[0].parallelNodeId;
+                // Override current_node_id to one of the completed branch task nodes 
+                // so the walker traces its outgoing edge to find the NEXT step in the workflow.
+                doc.current_node_id = existingBranches[0].nodeId;
                 doc.parallel_branch_data = null;
             }
         }
