@@ -373,7 +373,23 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                                 <span className="text-[11px] font-semibold text-gray-800">{u.name}</span>
                                 {u.department_name && <span className="text-[9px] text-gray-400 ml-1">· {u.department_name}</span>}
                               </div>
-                              <span className="text-[9px] text-gray-400 truncate max-w-[80px]">{u.email}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[9px] text-gray-400 truncate max-w-[80px] hidden md:inline">{u.email}</span>
+                                {data.routingType === 'SPECIFIC' && (
+                                  <button
+                                    onClick={() => {
+                                      onChange('assignmentStrategy', 'specific_user');
+                                      onChange('assignee', u.id);
+                                      onChange('roleId', null);
+                                      onChange('routingType', null);
+                                      onChange('targetDepartmentId', null);
+                                    }}
+                                    className="text-[9px] bg-blue-600 text-white px-2 py-0.5 rounded font-bold hover:bg-blue-700 transition-colors"
+                                  >
+                                    Assign User
+                                  </button>
+                                )}
+                              </div>
                             </li>
                           ))}
                         </ul>
@@ -628,7 +644,6 @@ const WorkflowBuilderInner = () => {
   const [clearanceWorkflowIds, setClearanceWorkflowIds] = useState('');
 
   const [selectedNodeId, setSelectedNodeId] = useState(null);
-  const [panelForceClosed, setPanelForceClosed] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isBrowserOpen, setIsBrowserOpen] = useState(false);
   const [toast, setToast] = useState({ type: '', text: '' });
@@ -702,7 +717,6 @@ const WorkflowBuilderInner = () => {
     if (nodes.length > 0) {
       // A new node was explicitly clicked — always show the panel
       setSelectedNodeId(nodes[0].id);
-      setPanelForceClosed(false);
     } else {
       setSelectedNodeId(null);
     }
@@ -811,26 +825,6 @@ const WorkflowBuilderInner = () => {
   const publishWorkflow = () => {
     if (!workflowName) { showToast('error', 'Please enter a workflow name before publishing.'); return; }
 
-    let isLoadedWorkflowPublished = false;
-    if (selectedWorkflowId) {
-      const loadedWorkflow = savedWorkflows.find(w => w.id === parseInt(selectedWorkflowId));
-      if (loadedWorkflow) {
-        const meta = (typeof loadedWorkflow.flow_structure === 'string' ? JSON.parse(loadedWorkflow.flow_structure) : loadedWorkflow.flow_structure).metadata;
-        isLoadedWorkflowPublished = meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
-      }
-    }
-
-    if (isLoadedWorkflowPublished) {
-      showConfirm(
-        '⚠️ Already Published',
-        ['This workflow is already published.'],
-        null,
-        'Understood',
-        'warning'
-      );
-      return;
-    }
-
     const errors = getValidationErrors();
     if (errors.length > 0) {
       showConfirm(
@@ -871,7 +865,8 @@ const WorkflowBuilderInner = () => {
         await api.put(`/workflows/${selectedWorkflowId}`, { name: workflowName, flow_structure: flowData });
         showToast('success', 'Workflow updated successfully!');
       } else {
-        await api.post('/workflows', { name: workflowName, flow_structure: flowData });
+        const res = await api.post('/workflows', { name: workflowName, flow_structure: flowData });
+        setSelectedWorkflowId(res.data.id.toString());
         showToast('success', 'New workflow created successfully!');
       }
       // Re-fetch list
@@ -1256,11 +1251,14 @@ const WorkflowBuilderInner = () => {
         </div>
 
         {/* Right Inspector Panel */}
-        {selectedNodeId && !panelForceClosed && (
+        {selectedNodeId && (
           <PropertyInspector
             selectedNode={selectedNode}
             updateNodeData={updateNodeData}
-            closePanel={() => { setSelectedNodeId(null); setPanelForceClosed(true); }}
+            closePanel={() => { 
+              setNodes(nds => nds.map(n => ({ ...n, selected: false })));
+              setSelectedNodeId(null); 
+            }}
             staffList={staffList}
             rolesList={rolesList}
             departments={departments}

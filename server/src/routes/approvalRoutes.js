@@ -398,12 +398,36 @@ router.post('/approve', authenticateToken, async (req, res) => {
 
                         if (start && start.type === 'task') {
                             if (start.data?.assignmentStrategy === 'role_based') {
-                                initialRoleId = start.data.roleId ? parseInt(start.data.roleId, 10) : null;
+                                let tRoleId = start.data.roleId ? parseInt(start.data.roleId, 10) : null;
+                                let tDeptId = null;
                                 if (start.data.routingType === 'SPECIFIC') {
-                                    initialDepartmentId = start.data.targetDepartmentId ? parseInt(start.data.targetDepartmentId, 10) : null;
+                                    tDeptId = start.data.targetDepartmentId ? parseInt(start.data.targetDepartmentId, 10) : null;
                                 } else if (start.data.routingType === 'INITIATOR_DEPT') {
                                     const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [doc.submitter_id]);
-                                    initialDepartmentId = submitterDeptQuery.rows[0]?.department_id || null;
+                                    tDeptId = submitterDeptQuery.rows[0]?.department_id || null;
+                                }
+
+                                let lbQuery = `
+                                    SELECT u.id, COUNT(d.id) as pending_count 
+                                    FROM users u
+                                    LEFT JOIN documents d ON d.current_assignee_id = u.id AND d.status = 'Pending'
+                                    WHERE u.role_id = $1 AND u.is_active = true
+                                `;
+                                const lbParams = [tRoleId];
+                                if (tDeptId) {
+                                    lbQuery += ` AND u.department_id = $2`;
+                                    lbParams.push(tDeptId);
+                                }
+                                lbQuery += ` GROUP BY u.id ORDER BY pending_count ASC LIMIT 1`;
+                                
+                                const lbResult = await pool.query(lbQuery, lbParams);
+                                if (lbResult.rows.length > 0) {
+                                    initialAssigneeId = lbResult.rows[0].id;
+                                    initialRoleId = null;
+                                    initialDepartmentId = null;
+                                } else {
+                                    initialRoleId = tRoleId;
+                                    initialDepartmentId = tDeptId;
                                 }
                             } else {
                                 initialAssigneeId = start.data?.assignee ? parseInt(start.data.assignee, 10) : null;
@@ -582,12 +606,36 @@ router.post('/approve', authenticateToken, async (req, res) => {
                             let bDepartmentId = null;
 
                             if (branchNode.data?.assignmentStrategy === 'role_based') {
-                                bRoleId = branchNode.data.roleId ? parseInt(branchNode.data.roleId, 10) : null;
+                                let tRoleId = branchNode.data.roleId ? parseInt(branchNode.data.roleId, 10) : null;
+                                let tDeptId = null;
                                 if (branchNode.data.routingType === 'SPECIFIC') {
-                                    bDepartmentId = branchNode.data.targetDepartmentId ? parseInt(branchNode.data.targetDepartmentId, 10) : null;
-                                } else if (branchNode.data.routingType === 'INITIATOR_DEPT' && submitterInfo) {
+                                    tDeptId = branchNode.data.targetDepartmentId ? parseInt(branchNode.data.targetDepartmentId, 10) : null;
+                                } else if (branchNode.data.routingType === 'INITIATOR_DEPT' && doc.submitter_id) {
                                     const sQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [doc.submitter_id]);
-                                    bDepartmentId = sQuery.rows[0]?.department_id || null;
+                                    tDeptId = sQuery.rows[0]?.department_id || null;
+                                }
+
+                                let lbQuery = `
+                                    SELECT u.id, COUNT(d.id) as pending_count 
+                                    FROM users u
+                                    LEFT JOIN documents d ON d.current_assignee_id = u.id AND d.status = 'Pending'
+                                    WHERE u.role_id = $1 AND u.is_active = true
+                                `;
+                                const lbParams = [tRoleId];
+                                if (tDeptId) {
+                                    lbQuery += ` AND u.department_id = $2`;
+                                    lbParams.push(tDeptId);
+                                }
+                                lbQuery += ` GROUP BY u.id ORDER BY pending_count ASC LIMIT 1`;
+                                
+                                const lbResult = await pool.query(lbQuery, lbParams);
+                                if (lbResult.rows.length > 0) {
+                                    bAssigneeId = lbResult.rows[0].id;
+                                    bRoleId = null;
+                                    bDepartmentId = null;
+                                } else {
+                                    bRoleId = tRoleId;
+                                    bDepartmentId = tDeptId;
                                 }
                             } else {
                                 bAssigneeId = branchNode.data?.assignee ? parseInt(branchNode.data.assignee, 10) : null;
@@ -613,12 +661,36 @@ router.post('/approve', authenticateToken, async (req, res) => {
                     // It's a task (approval) node — this is the next human step
                     nextNodeId = targetNode.id;
                     if (targetNode.data?.assignmentStrategy === 'role_based') {
-                        nextRoleId = targetNode.data.roleId ? parseInt(targetNode.data.roleId, 10) : null;
+                        let tRoleId = targetNode.data.roleId ? parseInt(targetNode.data.roleId, 10) : null;
+                        let tDeptId = null;
                         if (targetNode.data.routingType === 'SPECIFIC') {
-                            nextDepartmentId = targetNode.data.targetDepartmentId ? parseInt(targetNode.data.targetDepartmentId, 10) : null;
+                            tDeptId = targetNode.data.targetDepartmentId ? parseInt(targetNode.data.targetDepartmentId, 10) : null;
                         } else if (targetNode.data.routingType === 'INITIATOR_DEPT' && doc.submitter_id) {
                             const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [doc.submitter_id]);
-                            nextDepartmentId = submitterDeptQuery.rows[0]?.department_id || null;
+                            tDeptId = submitterDeptQuery.rows[0]?.department_id || null;
+                        }
+
+                        let lbQuery = `
+                            SELECT u.id, COUNT(d.id) as pending_count 
+                            FROM users u
+                            LEFT JOIN documents d ON d.current_assignee_id = u.id AND d.status = 'Pending'
+                            WHERE u.role_id = $1 AND u.is_active = true
+                        `;
+                        const lbParams = [tRoleId];
+                        if (tDeptId) {
+                            lbQuery += ` AND u.department_id = $2`;
+                            lbParams.push(tDeptId);
+                        }
+                        lbQuery += ` GROUP BY u.id ORDER BY pending_count ASC LIMIT 1`;
+                        
+                        const lbResult = await pool.query(lbQuery, lbParams);
+                        if (lbResult.rows.length > 0) {
+                            nextAssigneeId = lbResult.rows[0].id;
+                            nextRoleId = null;
+                            nextDepartmentId = null;
+                        } else {
+                            nextRoleId = tRoleId;
+                            nextDepartmentId = tDeptId;
                         }
                     } else {
                         nextAssigneeId = targetNode.data?.assignee ? parseInt(targetNode.data.assignee, 10) : null;

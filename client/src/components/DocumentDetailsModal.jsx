@@ -18,13 +18,14 @@ const DocumentDetailsModal = ({ document, onClose }) => {
   const [isAttaching, setIsAttaching] = useState(false);
   const [toastMsg, setToastMsg] = useState({ type: '', text: '' });
   
-  // Verification Links State
   const [verificationLinks, setVerificationLinks] = useState([]);
   const [showVerificationLinksSection, setShowVerificationLinksSection] = useState(false);
   const [newLinkPurpose, setNewLinkPurpose] = useState('');
   const [newLinkExpiryDays, setNewLinkExpiryDays] = useState('');
   const [newLinkMaxUses, setNewLinkMaxUses] = useState('');
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
+  
+  const [tagHistory, setTagHistory] = useState([]);
 
   const showToast = (type, text) => {
     setToastMsg({ type, text });
@@ -46,18 +47,20 @@ const DocumentDetailsModal = ({ document, onClose }) => {
     const fetchHistory = async () => {
       if (!document) return; // Safe guard inside the hook
       try {
-        const [histRes, clearRes, attachRes, versionsRes, vLinksRes] = await Promise.all([
+        const [histRes, clearRes, attachRes, versionsRes, vLinksRes, tagHistRes] = await Promise.all([
           api.get(`/documents/${document.id}/history`),
           api.get(`/documents/${document.id}/clearances`).catch(() => ({ data: [] })),
           api.get(`/documents/${document.id}/attachments`).catch(() => ({ data: [] })),
           api.get(`/documents/${document.id}/versions`).catch(() => ({ data: [] })),
-          api.get(`/documents/${document.id}/verification-links`).catch(() => ({ data: [] }))
+          api.get(`/documents/${document.id}/verification-links`).catch(() => ({ data: [] })),
+          api.get(`/documents/${document.id}/tag-history`).catch(() => ({ data: [] }))
         ]);
         setHistory(histRes.data);
         setClearances(clearRes.data);
         setAttachments(attachRes.data);
         setVersions(versionsRes.data);
         setVerificationLinks(vLinksRes.data || []);
+        setTagHistory(tagHistRes.data || []);
       } catch (error) {
         console.error('Failed to fetch history:', error);
       } finally {
@@ -604,6 +607,30 @@ const DocumentDetailsModal = ({ document, onClose }) => {
               </div>
             )}
 
+            {/* Tag History Section */}
+            {tagHistory.length > 0 && (
+              <div className="flex flex-col mt-6 border-t pt-4">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-3 border-b pb-2 flex items-center gap-2">
+                  <span>🏷️</span> Tag History
+                  <span className="ml-auto text-xs font-semibold bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{tagHistory.length} tag{tagHistory.length > 1 ? 's' : ''} applied</span>
+                </h3>
+                <div className="space-y-3 pl-2 border-l-2 border-green-200 ml-2">
+                  {tagHistory.map((tagObj) => (
+                    <div key={tagObj.id} className="relative pl-6">
+                      <span className="absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-white bg-green-400"></span>
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className="text-xs font-bold text-green-800 bg-green-100 px-2 py-0.5 rounded">"{tagObj.tag}"</span>
+                          <span className="text-xs text-gray-400">{new Date(tagObj.created_at).toLocaleString()}</span>
+                        </div>
+                        <p className="text-xs text-green-700 mt-1">Applied by: <span className="font-semibold">{tagObj.applied_by || 'System'}</span></p>
+                        {tagObj.node_id && <p className="text-[10px] text-green-600 mt-0.5">Node ID: {tagObj.node_id}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
           </div>
         </div>
