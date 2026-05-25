@@ -61,7 +61,8 @@ router.get('/departments', authenticateToken, verifyAdmin, async (req, res) => {
 });
 
 router.post('/departments', authenticateToken, verifyAdmin, async (req, res) => {
-    const { name } = req.body;
+    let { name } = req.body;
+    name = (name || '').trim();
     try {
         const result = await pool.query('INSERT INTO departments (name) VALUES ($1) RETURNING *', [name]);
         await pool.query(
@@ -92,7 +93,8 @@ router.get('/roles', authenticateToken, verifyAdmin, async (req, res) => {
 });
 
 router.post('/roles', authenticateToken, verifyAdmin, async (req, res) => {
-    const { name, department_id, can_create_workflows, requires_workflow_approval, can_manage_users, can_approve } = req.body;
+    let { name, department_id, can_create_workflows, requires_workflow_approval, can_manage_users, can_approve } = req.body;
+    name = (name || '').trim();
     try {
         const result = await pool.query(
             `INSERT INTO dynamic_roles (name, department_id, can_create_workflows, requires_workflow_approval, can_manage_users, can_approve) 
@@ -437,7 +439,7 @@ router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.sing
                             } else if (roleNameLower === 'super admin') {
                                 roleId = 3;
                             } else {
-                                const roleCheck = await pool.query('SELECT id FROM dynamic_roles WHERE name ILIKE $1', [Role]);
+                                const roleCheck = await pool.query('SELECT id FROM dynamic_roles WHERE TRIM(name) ILIKE $1', [Role]);
                                 if (roleCheck.rows.length === 0) {
                                     error = `Role "${Role}" not found.`;
                                 } else {
@@ -447,7 +449,7 @@ router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.sing
 
                             // 3. Check department if provided
                             if (!error && Department) {
-                                const deptCheck = await pool.query('SELECT id FROM departments WHERE name ILIKE $1', [Department]);
+                                const deptCheck = await pool.query('SELECT id FROM departments WHERE TRIM(name) ILIKE $1', [Department]);
                                 if (deptCheck.rows.length === 0) {
                                     error = `Department "${Department}" not found.`;
                                 } else {
