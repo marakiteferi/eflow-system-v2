@@ -126,12 +126,38 @@ router.post('/upload', authenticateToken, (req, res, next) => upload.single('doc
                     initialNodeId = startNode.id;
 
                     if (startNode.data?.assignmentStrategy === 'role_based') {
-                        initialRoleId = startNode.data.roleId ? parseInt(startNode.data.roleId, 10) : null;
+                        let targetRoleId = startNode.data.roleId ? parseInt(startNode.data.roleId, 10) : null;
+                        let targetDeptId = null;
                         if (startNode.data.routingType === 'SPECIFIC') {
-                            initialDepartmentId = startNode.data.targetDepartmentId ? parseInt(startNode.data.targetDepartmentId, 10) : null;
+                            targetDeptId = startNode.data.targetDepartmentId ? parseInt(startNode.data.targetDepartmentId, 10) : null;
                         } else if (startNode.data.routingType === 'INITIATOR_DEPT') {
                             const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [submitter_id]);
-                            initialDepartmentId = submitterDeptQuery.rows[0]?.department_id || null;
+                            targetDeptId = submitterDeptQuery.rows[0]?.department_id || null;
+                        }
+
+                        // Option A: Load Balancing - Assign to the user with the fewest pending tasks
+                        let lbQuery = `
+                            SELECT u.id, COUNT(d.id) as pending_count 
+                            FROM users u
+                            LEFT JOIN documents d ON d.current_assignee_id = u.id AND d.status = 'Pending'
+                            WHERE u.role_id = $1 AND u.is_active = true
+                        `;
+                        const lbParams = [targetRoleId];
+                        if (targetDeptId) {
+                            lbQuery += ` AND u.department_id = $2`;
+                            lbParams.push(targetDeptId);
+                        }
+                        lbQuery += ` GROUP BY u.id ORDER BY pending_count ASC LIMIT 1`;
+                        
+                        const lbResult = await pool.query(lbQuery, lbParams);
+                        if (lbResult.rows.length > 0) {
+                            initialAssigneeId = lbResult.rows[0].id;
+                            initialRoleId = null; // Cleared because it is now directly assigned
+                            initialDepartmentId = null;
+                        } else {
+                            // Fallback if no users exist: keep it role-based (it will be stuck until someone is hired)
+                            initialRoleId = targetRoleId;
+                            initialDepartmentId = targetDeptId;
                         }
                     } else {
                         let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
@@ -209,12 +235,37 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
                     initialNodeId = startNode.id;
 
                     if (startNode.data?.assignmentStrategy === 'role_based') {
-                        initialRoleId = startNode.data.roleId ? parseInt(startNode.data.roleId, 10) : null;
+                        let targetRoleId = startNode.data.roleId ? parseInt(startNode.data.roleId, 10) : null;
+                        let targetDeptId = null;
                         if (startNode.data.routingType === 'SPECIFIC') {
-                            initialDepartmentId = startNode.data.targetDepartmentId ? parseInt(startNode.data.targetDepartmentId, 10) : null;
+                            targetDeptId = startNode.data.targetDepartmentId ? parseInt(startNode.data.targetDepartmentId, 10) : null;
                         } else if (startNode.data.routingType === 'INITIATOR_DEPT') {
                             const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [req.user.id]);
-                            initialDepartmentId = submitterDeptQuery.rows[0]?.department_id || null;
+                            targetDeptId = submitterDeptQuery.rows[0]?.department_id || null;
+                        }
+
+                        // Option A: Load Balancing - Assign to the user with the fewest pending tasks
+                        let lbQuery = `
+                            SELECT u.id, COUNT(d.id) as pending_count 
+                            FROM users u
+                            LEFT JOIN documents d ON d.current_assignee_id = u.id AND d.status = 'Pending'
+                            WHERE u.role_id = $1 AND u.is_active = true
+                        `;
+                        const lbParams = [targetRoleId];
+                        if (targetDeptId) {
+                            lbQuery += ` AND u.department_id = $2`;
+                            lbParams.push(targetDeptId);
+                        }
+                        lbQuery += ` GROUP BY u.id ORDER BY pending_count ASC LIMIT 1`;
+                        
+                        const lbResult = await pool.query(lbQuery, lbParams);
+                        if (lbResult.rows.length > 0) {
+                            initialAssigneeId = lbResult.rows[0].id;
+                            initialRoleId = null; 
+                            initialDepartmentId = null;
+                        } else {
+                            initialRoleId = targetRoleId;
+                            initialDepartmentId = targetDeptId;
                         }
                     } else {
                         let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
@@ -505,6 +556,11 @@ router.patch('/:id/tag', authenticateToken, async (req, res) => {
         );
 
         await pool.query(
+            "INSERT INTO document_tags_history (document_id, tag_name, tag_value, applied_by_user_id, node_id) VALUES ($1, 'metadata_tag', $2, $3, $4)",
+            [documentId, tag.trim(), req.user.id, doc.current_node_id || null]
+        );
+
+        await pool.query(
             "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)",
             [documentId, req.user.id, `Document tagged as: "${tag.trim()}"`]
         );
@@ -513,6 +569,23 @@ router.patch('/:id/tag', authenticateToken, async (req, res) => {
     } catch (err) {
         console.error('Error setting document tag:', err);
         res.status(500).json({ message: 'Server error setting tag.' });
+    }
+});
+
+// GET: Fetch document tag history
+router.get('/:id/tag-history', authenticateToken, async (req, res) => {
+    try {
+        const historyQuery = await pool.query(`
+            SELECT h.id, h.tag_value as tag, h.created_at, u.name as applied_by, h.node_id
+            FROM document_tags_history h
+            LEFT JOIN users u ON u.id = h.applied_by_user_id
+            WHERE h.document_id = $1
+            ORDER BY h.created_at DESC
+        `, [req.params.id]);
+        res.status(200).json(historyQuery.rows);
+    } catch (err) {
+        console.error('Error fetching tag history:', err);
+        res.status(500).json({ message: 'Server error fetching tag history.' });
     }
 });
 
