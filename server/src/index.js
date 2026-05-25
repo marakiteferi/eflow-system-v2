@@ -38,6 +38,7 @@ app.use('/api/documents', require('./routes/documentRoutes'));
 app.use('/api/approvals', require('./routes/approvalRoutes')); // We will build this next!
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/users', require('./routes/userRoutes')); // For OOO and delegation
+app.use('/api/notifications', require('./routes/notificationRoutes')); // In-app notifications
 // 5. Start Server
 startSlaMonitor(); // Activate the SLA monitoring engine
 app.listen(PORT, () => {
