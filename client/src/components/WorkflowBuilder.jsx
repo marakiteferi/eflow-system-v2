@@ -238,6 +238,41 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
     onChange('checklist', (data.checklist || []).filter((_, i) => i !== idx));
   };
 
+  const getSmartDropdownValue = () => {
+    if (data.assignmentStrategy === 'specific_user' && data.assignee) return `USER:${data.assignee}`;
+    if (data.assignmentStrategy === 'role_based' && data.roleId) {
+      if (data.routingType === 'INITIATOR_DEPT') return `ROLE:INITIATOR_DEPT:${data.roleId}`;
+      if (data.routingType === 'SPECIFIC' && data.targetDepartmentId) return `ROLE:SPECIFIC:${data.roleId}:${data.targetDepartmentId}`;
+      if (data.routingType === 'ANY') return `ROLE:ANY:${data.roleId}`;
+    }
+    return '';
+  };
+
+  const handleSmartDropdownChange = (val) => {
+    if (!val) {
+      onChange('assignmentStrategy', null);
+      onChange('assignee', null);
+      onChange('roleId', null);
+      onChange('routingType', null);
+      onChange('targetDepartmentId', null);
+      return;
+    }
+    const parts = val.split(':');
+    if (parts[0] === 'USER') {
+      onChange('assignmentStrategy', 'specific_user');
+      onChange('assignee', parts[1]);
+      onChange('roleId', null);
+      onChange('routingType', null);
+      onChange('targetDepartmentId', null);
+    } else if (parts[0] === 'ROLE') {
+      onChange('assignmentStrategy', 'role_based');
+      onChange('assignee', null);
+      onChange('roleId', parts[2]);
+      onChange('routingType', parts[1]);
+      onChange('targetDepartmentId', parts[1] === 'SPECIFIC' ? parts[3] : null);
+    }
+  };
+
   return (
     <div className="w-72 bg-white border-l border-gray-200 shadow-xl h-full flex flex-col fixed right-0 top-0 z-50 pt-16">
       <div className="flex justify-between items-center px-4 py-3 border-b bg-gray-50">
@@ -262,94 +297,41 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
             <div>
               <label className="block text-xs font-bold text-gray-700 mb-1">Who Should Complete This Step?</label>
               <select
-                value={data.assignmentStrategy || 'specific_user'}
-                onChange={(e) => {
-                  onChange('assignmentStrategy', e.target.value);
-                  if (e.target.value === 'specific_user') {
-                    onChange('roleId', null);
-                    onChange('routingType', null);
-                    onChange('targetDepartmentId', null);
-                  } else {
-                    onChange('assignee', null);
-                    onChange('routingType', 'ANY');
-                  }
-                }}
-                className="w-full text-sm border-gray-300 rounded p-2 border bg-white mb-3"
+                value={getSmartDropdownValue()}
+                onChange={(e) => handleSmartDropdownChange(e.target.value)}
+                className="w-full text-sm border-gray-300 rounded p-2 border bg-white mb-2 shadow-sm"
               >
-                <option value="specific_user">A Specific Person</option>
-                <option value="role_based">By Role & Department</option>
-              </select>
+                <option value="">-- Select Assignee --</option>
+                
+                <optgroup label="Applicant's Department (Dynamic)">
+                  {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false).map(r => (
+                    <option key={`dyn-${r.id}`} value={`ROLE:INITIATOR_DEPT:${r.id}`}>Applicant's {r.name}</option>
+                  ))}
+                </optgroup>
 
-              {(data.assignmentStrategy === 'specific_user' || !data.assignmentStrategy) ? (
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Select Person</label>
-                  <select
-                    value={data.assignee || ''} onChange={(e) => onChange('assignee', e.target.value)}
-                    className="w-full text-sm border-gray-300 rounded p-2 border bg-white mb-2"
-                  >
-                    <option value="">-- Any System User --</option>
-                    {/* Fix 1: Exclude students (role_id === 1) from approver list */}
-                    {staffList.filter(s => s.role_id !== 1).map(s => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}{s.department_name ? ` (${s.department_name})` : ''}
-                      </option>
+                {departments.map(d => (
+                  <optgroup key={`dept-${d.id}`} label={d.name}>
+                    {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false).map(r => (
+                      <option key={`spec-${r.id}-${d.id}`} value={`ROLE:SPECIFIC:${r.id}:${d.id}`}>{d.name} — {r.name}</option>
                     ))}
-                  </select>
-                  <p className="text-[9px] text-gray-400 mt-0.5">Students are excluded from approver assignments.</p>
-                </div>
-              ) : (
-                <div className="bg-blue-50 border border-blue-100 p-3 rounded-md mb-2">
-                  <div className="mb-3">
-                    <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Select Role</label>
-                    <select
-                      value={data.roleId || ''}
-                      onChange={(e) => {
-                        onChange('roleId', e.target.value);
-                        onChange('targetDepartmentId', ''); // reset dept on role change
-                      }}
-                      className="w-full text-sm border-blue-200 rounded p-1.5 focus:ring-blue-500 border bg-white"
-                    >
-                      <option value="">-- Select Approver Role --</option>
-                      {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false).map(r => (
-                        <option key={r.id} value={r.id}>{r.name}</option>
-                      ))}
-                    </select>
-                    <p className="text-[9px] text-blue-400 mt-0.5">Only roles marked as approvers are listed.</p>
-                  </div>
+                  </optgroup>
+                ))}
 
-                  {data.roleId && (
-                    <div className="mb-3">
-                      <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Department Routing</label>
-                      <select
-                        value={data.routingType || 'ANY'}
-                        onChange={(e) => {
-                          onChange('routingType', e.target.value);
-                          onChange('targetDepartmentId', ''); // reset specific dept
-                        }}
-                        className="w-full text-sm border-blue-200 rounded p-1.5 focus:ring-blue-500 border bg-white"
-                      >
-                        <option value="ANY">Any Department (Global)</option>
-                        <option value="INITIATOR_DEPT">Applicant's Department</option>
-                        <option value="SPECIFIC">A Specific Department</option>
-                      </select>
-                      {data.routingType === 'INITIATOR_DEPT' && (
-                        <p className="text-[9px] text-blue-600 mt-1 leading-tight">⚠️ Preview below shows ALL users with this role. At runtime, only the one in the submitter's department will be matched.</p>
-                      )}
-                    </div>
-                  )}
+                <optgroup label="Global Roles (Any Department)">
+                  {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false).map(r => (
+                    <option key={`any-${r.id}`} value={`ROLE:ANY:${r.id}`}>Any {r.name}</option>
+                  ))}
+                </optgroup>
 
-                  {data.roleId && data.routingType === 'SPECIFIC' && (
-                    <div className="mb-3">
-                      <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Select Specific Department</label>
-                      <select
-                        value={data.targetDepartmentId || ''} onChange={(e) => onChange('targetDepartmentId', e.target.value)}
-                        className="w-full text-sm border-blue-200 rounded p-1.5 focus:ring-blue-500 border bg-white"
-                      >
-                        <option value="">-- Select Department --</option>
-                        {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-                      </select>
-                    </div>
-                  )}
+                <optgroup label="Specific Person">
+                  {staffList.filter(s => s.role_id !== 1).map(s => (
+                    <option key={`user-${s.id}`} value={`USER:${s.id}`}>
+                      {s.name}{s.department_name ? ` (${s.department_name})` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </div>
 
                   {/* ── Live matching users preview ───────────────────────────── */}
                   {data.roleId && (
@@ -396,9 +378,6 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                       )}
                     </div>
                   )}
-                </div>
-              )}
-            </div>
 
             <div className="bg-red-50 p-3 rounded border border-red-100">
               <label className="block text-[10px] uppercase tracking-wider font-bold text-red-800 mb-1 border-b border-red-200 pb-1">SLA Timers (Hours)</label>
