@@ -179,110 +179,48 @@ const startSlaMonitor = () => {
                 // ── STAGE 3: Breach — Escalate ────────────────────────────────────
                 if (!isSlaBreached(activeClock)) continue;
 
-                console.log(`🚨 SLA BREACH: Document "${doc.title}" (ID: ${doc.id}) exceeded deadline. Auto-escalating...`);
+                console.log(`🚨 SLA BREACH: Document "${doc.title}" (ID: ${doc.id}) exceeded deadline. Auto-escalating to manual target...`);
 
-                let nextNodeId = null;
-                let nextAssigneeId = null;
-                let isFinalStep = true;
-
-                const outgoingEdges = edges.filter(e => e.source === doc.current_node_id);
-                if (outgoingEdges.length > 0) {
-                    const targetNode = nodes.find(n => n.id === outgoingEdges[0].target);
-                    if (targetNode) {
-                        nextNodeId = targetNode.id;
-                        nextAssigneeId = targetNode.data?.assignee ? parseInt(targetNode.data.assignee, 10) : null;
-                        isFinalStep = false;
-                    }
-                }
+                const escalationUserId = currentNode?.data?.escalationUserId ? parseInt(currentNode.data.escalationUserId, 10) : null;
 
                 await pool.query('BEGIN');
 
-                if (isFinalStep) {
-                    // Pitfall 5 FIX: Do NOT auto-approve. Route to designated fallback role instead.
-                    const fallbackQuery = await pool.query(`
-                        SELECT u.id as user_id
-                        FROM users u
-                        JOIN dynamic_roles r ON u.role_id = r.id
-                        WHERE r.is_escalation_fallback = TRUE AND r.is_active = TRUE
-                        LIMIT 1
-                    `);
-
-                    if (fallbackQuery.rows.length > 0) {
-                        const fallbackUserId = fallbackQuery.rows[0].user_id;
-                        await pool.query(`
-                            UPDATE documents SET
-                                current_assignee_id = $1,
-                                current_node_id = NULL,
-                                delegation_sla_deadline = NULL,
-                                sla_reminder_sent = FALSE,
-                                sla_warning_sent = FALSE,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = $2
-                        `, [fallbackUserId, doc.id]);
-
-                        await pool.query(
-                            `INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)`,
-                            [doc.id, doc.current_assignee_id, 'SLA Breached on Final Step — Routed to Escalation Fallback']
-                        );
-                        await pool.query(
-                            `INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Auto-Escalated', $4)`,
-                            [doc.id, doc.current_assignee_id, doc.current_node_id, `SLA breached. Original deadline: ${doc.original_sla_deadline}. Routed to fallback.`]
-                        );
-
-                        await sendUrgentEmail(fallbackUserId, doc.title);
-                        await insertNotification(
-                            fallbackUserId,
-                            `🚨 Escalated to You: "${doc.title}"`,
-                            `This document was escalated because its previous reviewer breached the SLA deadline. Your immediate action is required.`,
-                            'danger',
-                            doc.id
-                        );
-                    } else {
-                        await pool.query(
-                            `INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)`,
-                            [doc.id, doc.current_assignee_id, 'SLA CRITICAL: Final step breached but no Escalation Fallback role is configured!']
-                        );
-                        console.error(`❌ CRITICAL: Document "${doc.title}" has SLA breach on final step but no fallback role is configured!`);
-                    }
-                } else {
-                    // Escalate to next step in workflow
-                    const nextNode = nodes.find(n => n.id === nextNodeId);
-                    const nextSlaHours = nextNode?.data?.slaHours
-                        ? Math.abs(parseFloat(nextNode.data.slaHours)) : null;
-                    const newDelegationDeadline = nextSlaHours
-                        ? new Date(Date.now() + nextSlaHours * 60 * 60 * 1000).toISOString()
-                        : null;
-
+                if (escalationUserId) {
+                    // Route to explicitly defined manual target
                     await pool.query(`
                         UPDATE documents SET
-                            current_node_id = $1,
-                            current_assignee_id = $2,
-                            delegation_sla_deadline = $3,
+                            current_assignee_id = $1,
+                            delegation_sla_deadline = NULL,
                             sla_reminder_sent = FALSE,
                             sla_warning_sent = FALSE,
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = $4
-                    `, [nextNodeId, nextAssigneeId, newDelegationDeadline, doc.id]);
+                        WHERE id = $2
+                    `, [escalationUserId, doc.id]);
 
                     await pool.query(
                         `INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)`,
-                        [doc.id, doc.current_assignee_id, `SLA Breached — Escalated to next step. New delegation deadline: ${newDelegationDeadline || 'None'}`]
+                        [doc.id, doc.current_assignee_id, 'SLA Breached — Manually Reassigned to Escalation Target']
                     );
                     await pool.query(
                         `INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Auto-Escalated', $4)`,
-                        [doc.id, doc.current_assignee_id, doc.current_node_id,
-                        `SLA breached. Original deadline (frozen): ${doc.original_sla_deadline}. New delegation deadline: ${newDelegationDeadline}`]
+                        [doc.id, doc.current_assignee_id, doc.current_node_id, `SLA breached. Original deadline: ${doc.original_sla_deadline}. Reassigned to manual escalation target.`]
                     );
 
-                    if (nextAssigneeId) {
-                        await insertNotification(
-                            nextAssigneeId,
-                            `📥 New Escalated Task: "${doc.title}"`,
-                            `This document was escalated to you after its previous reviewer breached the SLA deadline.`,
-                            'warning',
-                            doc.id
-                        );
-                    }
+                    await sendUrgentEmail(escalationUserId, doc.title);
+                    await insertNotification(
+                        escalationUserId,
+                        `🚨 Escalated to You: "${doc.title}"`,
+                        `This document was escalated because its previous reviewer breached the SLA deadline. Your immediate action is required on this step.`,
+                        'danger',
+                        doc.id
+                    );
+                } else {
+                    // Legacy fallback or missing target
+                    await pool.query(
+                        `INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)`,
+                        [doc.id, doc.current_assignee_id, 'SLA CRITICAL: Step breached but no Escalation Target was configured! Document is stranded.']
+                    );
+                    console.error(`❌ CRITICAL: Document "${doc.title}" has SLA breach but no escalation target is configured!`);
                 }
 
                 await pool.query('COMMIT');

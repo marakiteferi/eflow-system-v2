@@ -446,7 +446,7 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                 <div className="flex justify-between items-center gap-2 pt-1 border-t border-red-200">
                   <div>
                     <span className="text-xs font-bold text-red-700">🚨 Breach / Escalate after</span>
-                    <p className="text-[9px] text-gray-400">Auto-escalates at this point</p>
+                    <p className="text-[9px] text-gray-400">Reassigns to target at this point</p>
                   </div>
                   <input
                     type="number" min="0" step="0.5"
@@ -456,6 +456,22 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                     placeholder="hrs"
                   />
                 </div>
+                {parseFloat(data.escalationHours) > 0 && (
+                  <div className="pt-2 mt-1 border-t border-red-100">
+                    <label className="block text-[10px] font-bold text-red-700 uppercase tracking-wider mb-1">Escalate To (Required)</label>
+                    <select
+                      value={data.escalationUserId || ''} onChange={(e) => onChange('escalationUserId', e.target.value)}
+                      className="w-full text-xs border border-red-300 rounded p-1.5 bg-red-50"
+                    >
+                      <option value="">-- Select Escalation Target --</option>
+                      {staffList.filter(s => s.role_id !== 1).map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}{s.department_name ? ` (${s.department_name})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -807,6 +823,10 @@ const WorkflowBuilderInner = () => {
         const hasAssignee = !!n.data.assignee;
         const hasRole = n.data.assignmentStrategy === 'role_based' && !!n.data.roleId;
         if (!hasAssignee && !hasRole) errors.push(`Approval node "${n.data.label}" has no assignee or role set.`);
+        
+        if (parseFloat(n.data.escalationHours) > 0 && !n.data.escalationUserId) {
+          errors.push(`Approval node "${n.data.label}" has an SLA breach timer but no Escalation Target selected.`);
+        }
       }
       if (n.type === 'email' && !n.data.recipient) errors.push(`Email node "${n.data.label}" has no recipient.`);
     });
