@@ -39,6 +39,9 @@ const Dashboard = () => {
   const [isAdminRequestingOtp, setIsAdminRequestingOtp] = useState(false);
   const [isAdminVerifyingOtp, setIsAdminVerifyingOtp] = useState(false);
 
+  // NEW: Recent Items Expansion State
+  const [showAllRecent, setShowAllRecent] = useState(false);
+
   // NEW: Workflows state for the checklist logic
   const [workflows, setWorkflows] = useState([]);
 
@@ -405,7 +408,9 @@ const Dashboard = () => {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="flex justify-between items-center p-6 border-b border-gray-100">
             <h3 className="text-lg font-bold text-gray-900">Recent Items</h3>
-            <button onClick={() => setActiveTab('tasks')} className="text-sm text-blue-600 font-bold hover:underline">View All</button>
+            <button onClick={() => setShowAllRecent(!showAllRecent)} className="text-sm text-blue-600 font-bold hover:underline">
+              {showAllRecent ? 'Show Less' : 'View All'}
+            </button>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-100">
@@ -418,7 +423,7 @@ const Dashboard = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 bg-white text-sm">
-                {documents.slice(0, 5).map(doc => (
+                {(showAllRecent ? documents : documents.slice(0, 5)).map(doc => (
                   <tr key={doc.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4">
                       <p className="font-bold text-gray-900 cursor-pointer hover:text-blue-600" onClick={() => setViewingDocument(doc)}>{doc.title}</p>
@@ -892,7 +897,7 @@ const Dashboard = () => {
                       <div className="flex justify-between items-start mb-4">
                         <div>
                           <h3 className="text-lg font-bold text-gray-800">Bulk User Import</h3>
-                          <p className="text-sm text-gray-500">Upload a CSV file with columns: <strong>Name, Email, Role, Department</strong> (Optional).</p>
+                          <p className="text-sm text-gray-500">Upload a CSV file with columns: <strong>Name, Email, Role, Department</strong>.</p>
                         </div>
                         <a href="data:text/csv;charset=utf-8,Name,Email,Role,Department%0AJohn%20Doe,john@example.com,Student,Computer%20Science" download="import_template.csv" className="text-sm font-bold text-indigo-600 hover:text-indigo-800">⬇ Download Template</a>
                       </div>
