@@ -42,6 +42,13 @@ const Dashboard = () => {
   // NEW: Recent Items Expansion State
   const [showAllRecent, setShowAllRecent] = useState(false);
 
+  // NEW: Export Audit Logs State
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState('');
+  const [exportSearch, setExportSearch] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+
   // NEW: Workflows state for the checklist logic
   const [workflows, setWorkflows] = useState([]);
 
@@ -347,6 +354,36 @@ const Dashboard = () => {
     } catch (err) {
       console.error('Failed to set tag:', err);
       showToast('error', err.response?.data?.message || 'Failed to set tag.');
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      setIsExporting(true);
+      const params = {};
+      if (exportStartDate) params.startDate = exportStartDate;
+      if (exportEndDate) params.endDate = exportEndDate;
+      if (exportSearch) params.search = exportSearch;
+
+      const response = await api.get('/admin/audit-logs/export', {
+        params,
+        responseType: 'text',
+      });
+      const blob = new Blob([response.data], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'Eflow_Audit_Logs_Export.csv');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setShowExportModal(false);
+      showToast('success', 'Audit logs exported successfully!');
+    } catch (error) {
+      console.error('Export error:', error);
+      showToast('error', 'Failed to export logs');
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -1035,16 +1072,7 @@ const Dashboard = () => {
                       <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wider">System Audit Trail</h4>
                       <button
                         onClick={() => {
-                          if (auditLogs.length === 0) { showToast('error', 'No logs to export.'); return; }
-                          let csvContent = "data:text/csv;charset=utf-8,Timestamp,Action,Document,User\n";
-                          auditLogs.forEach(log => {
-                            const date = new Date(log.timestamp).toLocaleString().replace(/,/g, '');
-                            csvContent += `${date},"${log.action}","${log.document_title || 'System'}","${log.user_name || 'System'}"\n`;
-                          });
-                          const link = document.createElement("a");
-                          link.setAttribute("href", encodeURI(csvContent));
-                          link.setAttribute("download", `Eflow_Audit_Logs.csv`);
-                          document.body.appendChild(link); link.click(); document.body.removeChild(link);
+                          setShowExportModal(true);
                         }}
                         className="bg-green-600 text-white px-4 py-2 rounded-md text-sm font-bold hover:bg-green-700 shadow-sm flex items-center gap-2"
                       >
@@ -1443,6 +1471,42 @@ const Dashboard = () => {
                   onUploadSuccess={() => { setUploadWf(null); fetchData(); setActiveTab('tasks'); }}
                   forcedWorkflowId={uploadWf.id}
                 />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL 6: EXPORT AUDIT LOGS */}
+        {showExportModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[70]">
+            <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-md">
+              <h3 className="text-xl font-bold text-gray-900 mb-2">Export Audit Logs</h3>
+              <p className="text-sm text-gray-500 mb-6">Filter the history to download specific logs. Leave empty to download the entire system history.</p>
+              
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Start Date</label>
+                  <input type="date" value={exportStartDate} onChange={(e) => setExportStartDate(e.target.value)} className="w-full px-3 py-2 border rounded-md" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">End Date</label>
+                  <input type="date" value={exportEndDate} onChange={(e) => setExportEndDate(e.target.value)} className="w-full px-3 py-2 border rounded-md" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Search (User, Action, Document)</label>
+                  <input type="text" value={exportSearch} onChange={(e) => setExportSearch(e.target.value)} placeholder="e.g. Approved, John Doe..." className="w-full px-3 py-2 border rounded-md" />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setShowExportModal(false)} className="px-4 py-2 text-gray-600 font-bold hover:bg-gray-100 rounded-md transition-colors">Cancel</button>
+                <button 
+                  onClick={handleExport} 
+                  disabled={isExporting} 
+                  className={`px-5 py-2 text-white font-bold rounded-md shadow-sm transition-colors ${isExporting ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                >
+                  {isExporting ? 'Generating CSV...' : 'Download CSV'}
+                </button>
               </div>
             </div>
           </div>

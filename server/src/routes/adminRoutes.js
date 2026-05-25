@@ -560,6 +560,67 @@ router.get('/audit-logs', authenticateToken, verifyAdmin, async (req, res) => {
     }
 });
 
+router.get('/audit-logs/export', authenticateToken, verifyAdmin, async (req, res) => {
+    const { startDate, endDate, search } = req.query;
+    try {
+        let query = `
+            SELECT a.id, a.action, a.timestamp, a.role_id,
+                   u.name as user_name,
+                   d.title as document_title,
+                   r.name as role_name
+            FROM audit_logs a
+            LEFT JOIN users u ON a.user_id = u.id
+            LEFT JOIN documents d ON a.document_id = d.id
+            LEFT JOIN dynamic_roles r ON a.role_id = r.id
+            WHERE 1=1
+        `;
+        const params = [];
+        let paramIndex = 1;
+
+        if (startDate) {
+            query += ` AND a.timestamp >= $${paramIndex++}`;
+            params.push(startDate);
+        }
+        if (endDate) {
+            // Include the entire end date by appending time if not provided
+            const end = endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`;
+            query += ` AND a.timestamp <= $${paramIndex++}`;
+            params.push(end);
+        }
+        if (search) {
+            query += ` AND (
+                a.action ILIKE $${paramIndex} OR 
+                u.name ILIKE $${paramIndex} OR 
+                d.title ILIKE $${paramIndex}
+            )`;
+            params.push(`%${search}%`);
+            paramIndex++;
+        }
+
+        query += ` ORDER BY a.timestamp DESC`;
+
+        const result = await pool.query(query, params);
+
+        let csvContent = "Timestamp,Action,Document,User\n";
+        result.rows.forEach(log => {
+            const d = new Date(log.timestamp);
+            const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+            
+            const action = log.action ? log.action.replace(/"/g, '""') : '';
+            const doc = log.document_title ? log.document_title.replace(/"/g, '""') : 'System';
+            const user = log.user_name ? log.user_name.replace(/"/g, '""') : 'System';
+            csvContent += `"${date}","${action}","${doc}","${user}"\n`;
+        });
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename=Eflow_Audit_Logs_Export.csv');
+        res.status(200).send(csvContent);
+    } catch (err) {
+        console.error('Export error:', err);
+        res.status(500).json({ message: 'Error exporting audit logs' });
+    }
+});
+
 router.get('/stats', authenticateToken, verifyAdmin, async (req, res) => {
     try {
         const totalDocs = await pool.query('SELECT COUNT(*) FROM documents');
