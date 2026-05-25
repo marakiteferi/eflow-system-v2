@@ -224,39 +224,6 @@ router.delete('/roles/:id', authenticateToken, verifyAdmin, async (req, res) => 
     }
 });
 
-// Pitfall 5 FIX: Get the current designated fallback role
-router.get('/roles/fallback', authenticateToken, verifyAdmin, async (req, res) => {
-    try {
-        const result = await pool.query(
-            'SELECT id, name FROM dynamic_roles WHERE is_escalation_fallback = TRUE AND is_active = TRUE LIMIT 1'
-        );
-        res.status(200).json(result.rows[0] || null);
-    } catch (err) {
-        res.status(500).json({ message: 'Error fetching fallback role' });
-    }
-});
-
-// Pitfall 5 FIX: Designate a role as the escalation fallback
-router.put('/roles/:id/fallback', authenticateToken, verifyAdmin, async (req, res) => {
-    const roleId = parseInt(req.params.id, 10);
-    try {
-        await pool.query('BEGIN');
-        // Clear any existing fallback designation (only one at a time)
-        await pool.query('UPDATE dynamic_roles SET is_escalation_fallback = FALSE WHERE is_escalation_fallback = TRUE');
-        await pool.query('UPDATE dynamic_roles SET is_escalation_fallback = TRUE WHERE id = $1', [roleId]);
-        await pool.query(
-            'INSERT INTO audit_logs (user_id, role_id, action) VALUES ($1, $2, $3)',
-            [req.user.id, roleId, 'Role set as Escalation Fallback']
-        );
-        await pool.query('COMMIT');
-        res.status(200).json({ message: 'Escalation fallback role updated successfully.' });
-    } catch (err) {
-        await pool.query('ROLLBACK');
-        console.error('Fallback role update error:', err);
-        res.status(500).json({ message: 'Error updating fallback role' });
-    }
-});
-
 // ==========================================
 // ADMIN OTP API
 // ==========================================

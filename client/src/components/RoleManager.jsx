@@ -209,17 +209,7 @@ const RoleManager = () => {
     }
   };
 
-  // Pitfall 5 FIX: Designate a role as the escalation fallback
-  const handleSetFallback = async (roleId, roleName) => {
-    if (!window.confirm(`Set "${roleName}" as the Escalation Fallback role? Only one role can hold this designation at a time.`)) return;
-    try {
-      await api.put(`/admin/roles/${roleId}/fallback`);
-      showToast('success', `"${roleName}" set as the Escalation Fallback role.`);
-      fetchData();
-    } catch (err) {
-      showToast('error', err.response?.data?.message || 'Failed to set fallback role');
-    }
-  };
+
 
   return (
     <>
@@ -319,12 +309,7 @@ const RoleManager = () => {
                         <span className={`font-bold ${role.is_active ? 'text-gray-800' : 'text-gray-400 line-through'}`}>
                           {role.name}
                         </span>
-                        {/* Pitfall 5 FIX: Escalation Fallback badge */}
-                        {role.is_escalation_fallback && (
-                          <span className="text-[10px] font-bold uppercase bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">
-                            🛟 Fallback
-                          </span>
-                        )}
+
                         {!role.is_active && (
                           <span className="text-[10px] font-bold uppercase bg-red-100 text-red-600 px-2 py-0.5 rounded-full">
                             🔒 Sealed
@@ -340,16 +325,7 @@ const RoleManager = () => {
 
                     {role.is_active && (
                       <div className="flex gap-1 shrink-0">
-                        {/* Pitfall 5 FIX: Set as Escalation Fallback */}
-                        {!role.is_escalation_fallback && (
-                          <button
-                            onClick={() => handleSetFallback(role.id, role.name)}
-                            title="Set as Escalation Fallback"
-                            className="text-xs px-2 py-1 rounded border border-orange-300 text-orange-600 hover:bg-orange-50 font-medium"
-                          >
-                            🛟 Fallback
-                          </button>
-                        )}
+
                         {/* Pitfall 1 & 2 FIX: Open Impact Report first before sealing */}
                         <button
                           onClick={() => setImpactTarget(role)}
