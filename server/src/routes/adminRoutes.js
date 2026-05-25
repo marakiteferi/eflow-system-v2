@@ -375,7 +375,7 @@ router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.sing
             try {
                 // Delete the file after parsing
                 fs.unlinkSync(req.file.path);
-                
+
                 const report = [];
                 for (let i = 0; i < results.length; i++) {
                     const row = results[i];
@@ -389,13 +389,13 @@ router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.sing
                     const Email = getVal('email');
                     const Role = getVal('role');
                     const Department = getVal('department');
-                    
+
                     let error = null;
                     let roleId = null;
                     let departmentId = null;
 
-                    if (!Name || !Email || !Role) {
-                        error = 'Name, Email, and Role are required fields.';
+                    if (!Name || !Email || !Role || !Department) {
+                        error = 'Name, Email, Role, and Department are required fields.';
                     } else {
                         // 1. Check if email exists
                         const emailCheck = await pool.query('SELECT id FROM users WHERE email = $1', [Email]);
@@ -443,7 +443,7 @@ router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.sing
                         error: error
                     });
                 }
-                
+
                 res.status(200).json(report);
             } catch (err) {
                 console.error('Import preview error:', err);
@@ -474,14 +474,14 @@ router.post('/users/import-commit', authenticateToken, verifyAdmin, async (req, 
 
     for (const user of validUsers) {
         if (!user.isValid || !user.email) continue;
-        
+
         try {
             await pool.query('BEGIN');
-            
+
             // Generate a high-entropy dummy password
             const dummyPassword = crypto.randomBytes(32).toString('hex');
             const hashedPassword = await bcrypt.hash(dummyPassword, 10);
-            
+
             const insertRes = await pool.query(
                 'INSERT INTO users (name, email, password_hash, role_id, department_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
                 [user.name, user.email, hashedPassword, user.role_id, user.department_id || null]
@@ -535,7 +535,7 @@ router.post('/users/import-commit', authenticateToken, verifyAdmin, async (req, 
         }
     }
 
-    res.status(200).json({ 
+    res.status(200).json({
         message: `Successfully imported ${imported.length} users.`,
         imported,
         failed

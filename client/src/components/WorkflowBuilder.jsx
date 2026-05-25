@@ -701,6 +701,27 @@ const WorkflowBuilderInner = () => {
 
   const publishWorkflow = () => {
     if (!workflowName) { showToast('error', 'Please enter a workflow name before publishing.'); return; }
+
+    let isLoadedWorkflowPublished = false;
+    if (selectedWorkflowId) {
+      const loadedWorkflow = savedWorkflows.find(w => w.id === parseInt(selectedWorkflowId));
+      if (loadedWorkflow) {
+        const meta = (typeof loadedWorkflow.flow_structure === 'string' ? JSON.parse(loadedWorkflow.flow_structure) : loadedWorkflow.flow_structure).metadata;
+        isLoadedWorkflowPublished = meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
+      }
+    }
+
+    if (isLoadedWorkflowPublished) {
+      showConfirm(
+        '⚠️ Already Published',
+        ['This workflow is already published.'],
+        null,
+        'Understood',
+        'warning'
+      );
+      return;
+    }
+
     const errors = getValidationErrors();
     if (errors.length > 0) {
       showConfirm(
