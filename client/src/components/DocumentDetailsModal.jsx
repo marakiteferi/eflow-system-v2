@@ -450,6 +450,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                       />
                       <input 
                         type="number" 
+                        min="1"
                         placeholder="Expires in days (optional)" 
                         value={newLinkExpiryDays} 
                         onChange={e => setNewLinkExpiryDays(e.target.value)} 
@@ -457,6 +458,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                       />
                       <input 
                         type="number" 
+                        min="1"
                         placeholder="Max uses (optional)" 
                         value={newLinkMaxUses} 
                         onChange={e => setNewLinkMaxUses(e.target.value)} 
@@ -510,7 +512,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                                       onClick={async () => {
                                         if(window.confirm('Revoke this link? It will no longer work.')) {
                                           try {
-                                            await api.patch(`/verification-links/${link.id}/revoke`);
+                                            await api.patch(`/documents/verification-links/${link.id}/revoke`);
                                             const vRes = await api.get(`/documents/${document.id}/verification-links`);
                                             setVerificationLinks(vRes.data);
                                             showToast('success', 'Link revoked.');

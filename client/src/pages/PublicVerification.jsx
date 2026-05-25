@@ -137,9 +137,19 @@ const PublicVerification = () => {
               <p className="text-xs font-mono text-gray-500 break-all bg-gray-100 p-3 rounded border border-gray-200">
                 {data.document_hash || 'Hash not available'}
               </p>
-              <p className="text-[10px] text-gray-400 mt-2">
+              <p className="text-[10px] text-gray-400 mt-2 mb-6">
                 This hash acts as a digital fingerprint for the document. If even a single byte of the original file is modified, the hash will completely change.
               </p>
+              <div className="flex justify-center">
+                <a 
+                  href={`${api.defaults.baseURL}/documents/verify-link/${token}/download`} 
+                  target="_blank" rel="noopener noreferrer"
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition-transform transform hover:-translate-y-1 flex items-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                  Download Authenticated Document
+                </a>
+              </div>
             </div>
           </div>
           
