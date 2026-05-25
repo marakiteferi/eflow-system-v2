@@ -92,12 +92,12 @@ router.get('/roles', authenticateToken, verifyAdmin, async (req, res) => {
 });
 
 router.post('/roles', authenticateToken, verifyAdmin, async (req, res) => {
-    const { name, department_id, can_create_workflows, requires_workflow_approval, can_manage_users } = req.body;
+    const { name, department_id, can_create_workflows, requires_workflow_approval, can_manage_users, can_approve } = req.body;
     try {
         const result = await pool.query(
-            `INSERT INTO dynamic_roles (name, department_id, can_create_workflows, requires_workflow_approval, can_manage_users) 
-             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [name, department_id || null, can_create_workflows || false, requires_workflow_approval || false, can_manage_users || false]
+            `INSERT INTO dynamic_roles (name, department_id, can_create_workflows, requires_workflow_approval, can_manage_users, can_approve) 
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+            [name, department_id || null, can_create_workflows || false, requires_workflow_approval || false, can_manage_users || false, can_approve !== false]
         );
         // Pitfall 6 FIX: Store role_id in audit log, not the name string
         await pool.query(
@@ -306,7 +306,7 @@ router.post('/request-otp', authenticateToken, verifyAdmin, async (req, res) => 
 router.get('/users', authenticateToken, verifyAdmin, async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT u.id, u.name, u.email, u.role_id, u.supervisor_id,
+            SELECT u.id, u.name, u.email, u.role_id, u.department_id, u.supervisor_id,
                    d.name as department_name, s.name as supervisor_name
             FROM users u 
             LEFT JOIN departments d ON u.department_id = d.id
@@ -316,6 +316,32 @@ router.get('/users', authenticateToken, verifyAdmin, async (req, res) => {
         res.status(200).json(result.rows);
     } catch (err) {
         res.status(500).json({ message: 'Error fetching users' });
+    }
+});
+
+// Preview: which users match a given role + optional department?
+// Used by WorkflowBuilder to show a live "matching users" preview
+router.get('/users/by-role', authenticateToken, async (req, res) => {
+    const { roleId, departmentId } = req.query;
+    if (!roleId) return res.status(400).json({ message: 'roleId is required' });
+    try {
+        let query = `
+            SELECT u.id, u.name, u.email, d.name as department_name
+            FROM users u
+            LEFT JOIN departments d ON u.department_id = d.id
+            WHERE u.role_id = $1
+        `;
+        const params = [parseInt(roleId, 10)];
+        if (departmentId) {
+            query += ' AND u.department_id = $2';
+            params.push(parseInt(departmentId, 10));
+        }
+        query += ' ORDER BY u.name ASC';
+        const result = await pool.query(query, params);
+        res.status(200).json(result.rows);
+    } catch (err) {
+        console.error('by-role error:', err);
+        res.status(500).json({ message: 'Error fetching users by role' });
     }
 });
 

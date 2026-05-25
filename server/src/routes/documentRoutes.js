@@ -364,6 +364,20 @@ router.get('/', authenticateToken, async (req, res) => {
                             AND d.current_role_id = $2
                             AND (d.current_department_id IS NULL OR d.current_department_id = $3)
                         )
+                        OR (
+                            d.parallel_branch_data IS NOT NULL AND EXISTS (
+                                SELECT 1 FROM jsonb_array_elements(d.parallel_branch_data::jsonb) AS b
+                                WHERE b->>'status' = 'Pending'
+                                AND (
+                                    (b->>'assigneeId')::numeric = $1
+                                    OR (
+                                        (b->>'assigneeId') IS NULL
+                                        AND (b->>'roleId')::numeric = $2
+                                        AND ((b->>'departmentId') IS NULL OR (b->>'departmentId')::numeric = $3)
+                                    )
+                                )
+                            )
+                        )
                     ))
                    OR a.approver_id = $1
                 ORDER BY d.created_at DESC

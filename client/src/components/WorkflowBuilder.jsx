@@ -199,10 +199,33 @@ const EmailProperties = ({ data, onChange }) => {
 const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [], rolesList = [], departments = [], savedWorkflows = [], selectedWorkflowId = '' }) => {
   // Hooks MUST be called before any early returns (React rules of hooks)
   const [newCheckItem, setNewCheckItem] = useState('');
+  const [rolePreviewUsers, setRolePreviewUsers] = useState([]);
+  const [rolePreviewLoading, setRolePreviewLoading] = useState(false);
+
+  const data = selectedNode?.data || {};
+
+  // Live preview: fetch matching users whenever role + department filter changes
+  useEffect(() => {
+    if (!selectedNode || selectedNode.type !== 'task') return;
+    if (data.assignmentStrategy !== 'role_based' || !data.roleId) {
+      setRolePreviewUsers([]);
+      return;
+    }
+    // For INITIATOR_DEPT we can't know the department at design time — show all in role
+    const deptId = data.routingType === 'SPECIFIC' ? data.targetDepartmentId : null;
+
+    setRolePreviewLoading(true);
+    const params = new URLSearchParams({ roleId: data.roleId });
+    if (deptId) params.append('departmentId', deptId);
+
+    api.get(`/admin/users/by-role?${params.toString()}`)
+      .then(res => setRolePreviewUsers(res.data))
+      .catch(() => setRolePreviewUsers([]))
+      .finally(() => setRolePreviewLoading(false));
+  }, [selectedNode?.id, data.assignmentStrategy, data.roleId, data.routingType, data.targetDepartmentId]);
 
   if (!selectedNode) return null;
 
-  const data = selectedNode.data;
   const onChange = (field, value) => updateNodeData(selectedNode.id, field, value);
 
   const addChecklistItem = () => {
@@ -265,29 +288,44 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                     className="w-full text-sm border-gray-300 rounded p-2 border bg-white mb-2"
                   >
                     <option value="">-- Any System User --</option>
-                    {staffList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    {/* Fix 1: Exclude students (role_id === 1) from approver list */}
+                    {staffList.filter(s => s.role_id !== 1).map(s => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}{s.department_name ? ` (${s.department_name})` : ''}
+                      </option>
+                    ))}
                   </select>
+                  <p className="text-[9px] text-gray-400 mt-0.5">Students are excluded from approver assignments.</p>
                 </div>
               ) : (
                 <div className="bg-blue-50 border border-blue-100 p-3 rounded-md mb-2">
                   <div className="mb-3">
                     <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Select Role</label>
                     <select
-                      value={data.roleId || ''} onChange={(e) => onChange('roleId', e.target.value)}
+                      value={data.roleId || ''}
+                      onChange={(e) => {
+                        onChange('roleId', e.target.value);
+                        onChange('targetDepartmentId', ''); // reset dept on role change
+                      }}
                       className="w-full text-sm border-blue-200 rounded p-1.5 focus:ring-blue-500 border bg-white"
                     >
-                      <option value="">-- Select Role (e.g. Head of Dept) --</option>
-                      {rolesList.filter(r => r.is_active || r.id <= 3).map(r => (
+                      <option value="">-- Select Approver Role --</option>
+                      {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false).map(r => (
                         <option key={r.id} value={r.id}>{r.name}</option>
                       ))}
                     </select>
+                    <p className="text-[9px] text-blue-400 mt-0.5">Only roles marked as approvers are listed.</p>
                   </div>
 
                   {data.roleId && (
                     <div className="mb-3">
                       <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Department Routing</label>
                       <select
-                        value={data.routingType || 'ANY'} onChange={(e) => onChange('routingType', e.target.value)}
+                        value={data.routingType || 'ANY'}
+                        onChange={(e) => {
+                          onChange('routingType', e.target.value);
+                          onChange('targetDepartmentId', ''); // reset specific dept
+                        }}
                         className="w-full text-sm border-blue-200 rounded p-1.5 focus:ring-blue-500 border bg-white"
                       >
                         <option value="ANY">Any Department (Global)</option>
@@ -295,13 +333,13 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                         <option value="SPECIFIC">A Specific Department</option>
                       </select>
                       {data.routingType === 'INITIATOR_DEPT' && (
-                        <p className="text-[9px] text-blue-600 mt-1 leading-tight">Routes to a user holding this role in the submitter's department.</p>
+                        <p className="text-[9px] text-blue-600 mt-1 leading-tight">⚠️ Preview below shows ALL users with this role. At runtime, only the one in the submitter's department will be matched.</p>
                       )}
                     </div>
                   )}
 
                   {data.roleId && data.routingType === 'SPECIFIC' && (
-                    <div>
+                    <div className="mb-3">
                       <label className="block text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1">Select Specific Department</label>
                       <select
                         value={data.targetDepartmentId || ''} onChange={(e) => onChange('targetDepartmentId', e.target.value)}
@@ -312,24 +350,95 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                       </select>
                     </div>
                   )}
+
+                  {/* ── Live matching users preview ───────────────────────────── */}
+                  {data.roleId && (
+                    <div className="mt-2 pt-2 border-t border-blue-200">
+                      <p className="text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1.5">
+                        👥 Who Will Receive This Step
+                        {data.routingType === 'INITIATOR_DEPT' && ' (all in role)'}
+                      </p>
+                      {rolePreviewLoading ? (
+                        <p className="text-[10px] text-blue-400 italic">Loading...</p>
+                      ) : rolePreviewUsers.length === 0 ? (
+                        <div className="bg-red-50 border border-red-200 rounded p-2">
+                          <p className="text-[10px] font-bold text-red-700">⚠️ No users found!</p>
+                          <p className="text-[9px] text-red-600 mt-0.5">Nobody in the system matches this role{data.routingType === 'SPECIFIC' && data.targetDepartmentId ? ' + department' : ''} combination. This step will be unclaimable.</p>
+                        </div>
+                      ) : (
+                        <ul className="space-y-1">
+                          {rolePreviewUsers.map(u => (
+                            <li key={u.id} className="flex items-center justify-between bg-white border border-blue-100 rounded px-2 py-1">
+                              <div>
+                                <span className="text-[11px] font-semibold text-gray-800">{u.name}</span>
+                                {u.department_name && <span className="text-[9px] text-gray-400 ml-1">· {u.department_name}</span>}
+                              </div>
+                              <span className="text-[9px] text-gray-400 truncate max-w-[80px]">{u.email}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
             <div className="bg-red-50 p-3 rounded border border-red-100">
-              <label className="block text-[10px] uppercase tracking-wider font-bold text-red-800 mb-2 border-b border-red-200 pb-1">SLA Timers (Hours)</label>
+              <label className="block text-[10px] uppercase tracking-wider font-bold text-red-800 mb-1 border-b border-red-200 pb-1">SLA Timers (Hours)</label>
+              <p className="text-[9px] text-red-500 mb-2">All values must be positive. Reminder &gt; Warning &gt; Breach (decreasing).</p>
               <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs text-red-900">Reminder</span>
-                  <input type="number" value={data.reminderHours || ''} onChange={e => onChange('reminderHours', e.target.value)} className="w-16 text-xs p-1 border rounded" />
+                <div className="flex justify-between items-center gap-2">
+                  <div>
+                    <span className="text-xs text-gray-700 font-medium">⏰ Reminder after</span>
+                    <p className="text-[9px] text-gray-400">First gentle nudge</p>
+                  </div>
+                  <input
+                    type="number" min="0" step="0.5"
+                    value={data.slaHours || ''}
+                    onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange('slaHours', v || ''); }}
+                    className="w-20 text-xs p-1.5 border rounded text-center"
+                    placeholder="hrs"
+                  />
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-xs text-amber-900">Warning</span>
-                  <input type="number" value={data.warningHours || ''} onChange={e => onChange('warningHours', e.target.value)} className="w-16 text-xs p-1 border rounded" />
+                <div className="flex justify-between items-center gap-2">
+                  <div>
+                    <span className="text-xs text-amber-700 font-medium">🔔 Reminder alert at</span>
+                    <p className="text-[9px] text-gray-400">hrs remaining before breach</p>
+                  </div>
+                  <input
+                    type="number" min="0" step="0.5"
+                    value={data.reminderHours || ''}
+                    onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange('reminderHours', v || ''); }}
+                    className="w-20 text-xs p-1.5 border rounded text-center"
+                    placeholder="hrs"
+                  />
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-bold text-red-700">Breach</span>
-                  <input type="number" value={data.escalationHours || ''} onChange={e => onChange('escalationHours', e.target.value)} className="w-16 text-xs p-1 border border-red-400 rounded" />
+                <div className="flex justify-between items-center gap-2">
+                  <div>
+                    <span className="text-xs text-orange-700 font-medium">⚠️ Warning alert at</span>
+                    <p className="text-[9px] text-gray-400">hrs remaining before breach</p>
+                  </div>
+                  <input
+                    type="number" min="0" step="0.5"
+                    value={data.warningHours || ''}
+                    onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange('warningHours', v || ''); }}
+                    className="w-20 text-xs p-1.5 border rounded text-center"
+                    placeholder="hrs"
+                  />
+                </div>
+                <div className="flex justify-between items-center gap-2 pt-1 border-t border-red-200">
+                  <div>
+                    <span className="text-xs font-bold text-red-700">🚨 Breach / Escalate after</span>
+                    <p className="text-[9px] text-gray-400">Auto-escalates at this point</p>
+                  </div>
+                  <input
+                    type="number" min="0" step="0.5"
+                    value={data.escalationHours || ''}
+                    onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange('escalationHours', v || ''); }}
+                    className="w-20 text-xs p-1.5 border border-red-400 rounded text-center font-bold"
+                    placeholder="hrs"
+                  />
                 </div>
               </div>
             </div>

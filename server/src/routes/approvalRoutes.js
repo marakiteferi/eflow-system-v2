@@ -16,6 +16,19 @@ const pool = new Pool({
 
 const otpStore = new Map();
 
+// ── In-App Notification Helper ───────────────────────────────────────────────
+const insertNotification = async (userId, title, body, type = 'info', documentId = null) => {
+    if (!userId) return;
+    try {
+        await pool.query(
+            'INSERT INTO notifications (user_id, title, body, type, document_id) VALUES ($1, $2, $3, $4, $5)',
+            [userId, title, body, type, documentId]
+        );
+    } catch (err) {
+        console.error('Failed to insert notification:', err.message);
+    }
+};
+
 // Mailer Configuration
 const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
@@ -659,6 +672,13 @@ router.post('/approve', authenticateToken, async (req, res) => {
                 'Document Fully Approved!',
                 `Great news! Your document <b>"${doc.title}"</b> has passed all review stages.`
             );
+            await insertNotification(
+                doc.submitter_id,
+                `✅ Approved: "${doc.title}"`,
+                'Your submission has completed all review stages successfully.',
+                'success',
+                documentId
+            );
 
         } else {
             await pool.query(
@@ -752,6 +772,13 @@ router.post('/reject', authenticateToken, async (req, res) => {
             doc.submitter_id,
             'Action Required: Document Rejected',
             `Your document <b>"${doc.title}"</b> requires your attention.<br><br><b>Feedback:</b> ${comments}<br><br>Please use the "Fix & Resubmit" button on your dashboard to upload a corrected version.`
+        );
+        await insertNotification(
+            doc.submitter_id,
+            `❌ Rejected: "${doc.title}"`,
+            `Your submission was rejected. Reason: ${comments}. Please fix and resubmit.`,
+            'danger',
+            documentId
         );
 
         res.status(200).json({ message: 'Document rejected successfully' });

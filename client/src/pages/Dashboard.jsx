@@ -77,6 +77,10 @@ const Dashboard = () => {
   // NEW: Local tag state for the review queue (key = docId, value = tag string)
   const [localTags, setLocalTags] = useState({});
 
+  // NEW: In-app notifications
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+
   // Derive permissions securely (Preventing ID overlap with custom roles)
   const isStudent = user?.role_id === 1;
   const isStaffOrReviewer = user?.role_id === 2 || user?.role_id > 3;
@@ -113,6 +117,12 @@ const Dashboard = () => {
         const rolesResponse = await api.get('/admin/roles');
         setDynamicRoles(rolesResponse.data);
       }
+      // Always fetch notifications for logged-in users
+      try {
+        const notifRes = await api.get('/notifications');
+        setNotifications(notifRes.data);
+        setUnreadCount(notifRes.data.filter(n => !n.is_read).length);
+      } catch (_) { /* non-critical */ }
     } catch (error) {
       console.error("Failed to fetch data", error);
     }
@@ -661,41 +671,36 @@ const Dashboard = () => {
   };
 
   const renderNotificationsView = () => {
-    // Dynamic notifications:
-    const mySubmissions = filteredDocs.filter(d => d.submitter_id === user.id);
-    const assignedTasks = filteredDocs.filter(d => {
-      if (d.status !== 'Pending' || d.submitter_id === user.id) return false;
-      
-      const isDirectAssignee = d.current_assignee_id === user?.id;
-      const isRoleAssignee = !d.current_assignee_id && d.current_role_id === user?.role_id && (!d.current_department_id || d.current_department_id === user?.department_id);
-      
-      const branchData = d.parallel_branch_data;
-      let isParallelAssignee = false;
-      if (branchData && Array.isArray(branchData)) {
-          if (branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
-          isParallelAssignee = branchData.some(b => {
-              if (b.status !== 'Pending') return false;
-              if (b.assigneeId === user?.id) return true;
-              if (b.roleId === user?.role_id && (!b.departmentId || b.departmentId === user?.department_id)) return true;
-              return false;
-          });
-      } else if (branchData && branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) {
-          return false;
-      }
-
-      return isDirectAssignee || isRoleAssignee || isParallelAssignee;
-    });
-
-    const rejected = mySubmissions.filter(d => d.status === 'Rejected').slice(0, 5);
-    const approved = mySubmissions.filter(d => d.status === 'Approved').slice(0, 5);
-    const pending = assignedTasks.slice(0, 5); // stuff waiting for them
+    const typeStyles = {
+      success: { border: 'border-l-green-500', bg: 'hover:bg-green-50', dot: 'bg-green-500', icon: '✅' },
+      danger:  { border: 'border-l-red-500',   bg: 'hover:bg-red-50',   dot: 'bg-red-500',   icon: '🚨' },
+      warning: { border: 'border-l-amber-400', bg: 'hover:bg-amber-50', dot: 'bg-amber-500', icon: '⚠️' },
+      info:    { border: 'border-l-blue-400',  bg: 'hover:bg-blue-50',  dot: 'bg-blue-400',  icon: '📄' },
+    };
     const timeAgo = (dateStr) => {
       const diff = Date.now() - new Date(dateStr).getTime();
       const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
       if (mins < 60) return `${mins} min ago`;
       const hrs = Math.floor(mins / 60);
       if (hrs < 24) return `${hrs} hour${hrs > 1 ? 's' : ''} ago`;
       return new Date(dateStr).toLocaleDateString();
+    };
+    const markAllRead = async () => {
+      try {
+        await api.patch('/notifications/mark-all-read');
+        setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+        setUnreadCount(0);
+      } catch (err) {
+        showToast('error', 'Failed to mark notifications as read.');
+      }
+    };
+    const markOneRead = async (id) => {
+      try {
+        await api.patch(`/notifications/${id}/read`);
+        setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+        setUnreadCount(prev => Math.max(0, prev - 1));
+      } catch (_) {}
     };
 
     return (
@@ -703,80 +708,56 @@ const Dashboard = () => {
         <div className="flex justify-between items-end mb-8">
           <div>
             <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Notifications</h2>
-            <p className="text-gray-500 mt-1">Stay updated with your latest alerts and workflow assignments.</p>
+            <p className="text-gray-500 mt-1">Stay updated with your latest alerts and workflow events.</p>
           </div>
-        </div>
-
-        <div className="space-y-6">
-          {pending.length > 0 && (
-            <section>
-              <h2 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Tasks Assigned to You</h2>
-              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden divide-y divide-gray-100">
-                {pending.map(doc => (
-                  <div key={doc.id} onClick={() => { setActiveTab('tasks'); setViewingDocument(doc); }} className="p-5 flex items-start gap-4 hover:bg-blue-50 transition-colors cursor-pointer border-l-4 border-l-blue-500">
-                    <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg bg-blue-100 text-blue-600">📄</div>
-                    <div className="flex-1">
-                      <div className="flex justify-between">
-                        <h4 className="text-sm font-bold text-gray-900">Review Required: {doc.title}</h4>
-                        <span className="text-xs text-gray-400 font-medium whitespace-nowrap ml-4">{timeAgo(doc.created_at)}</span>
-                      </div>
-                      <p className="text-sm text-gray-500 mt-1">A new document has been assigned to your role for review.</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {rejected.length > 0 && (
-            <section>
-              <h2 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Action Required (Rejected)</h2>
-              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden divide-y divide-gray-100">
-                {rejected.map(doc => (
-                  <div key={doc.id} className="p-5 flex items-start gap-4 hover:bg-red-50 transition-colors cursor-pointer border-l-4 border-l-red-500">
-                    <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg bg-red-100 text-red-600">⚠️</div>
-                    <div className="flex-1">
-                      <div className="flex justify-between">
-                        <h4 className="text-sm font-bold text-gray-900">Document Rejected: {doc.title}</h4>
-                        <span className="text-xs text-gray-400 font-medium whitespace-nowrap ml-4">{timeAgo(doc.updated_at || doc.created_at)}</span>
-                      </div>
-                      <p className="text-sm text-gray-500 mt-1">Your submission was rejected. You may need to fix and resubmit.</p>
-                      <button onClick={() => openResubmitModal(doc.id)} className="mt-3 text-xs bg-red-100 text-red-700 px-3 py-1.5 rounded-lg font-bold hover:bg-red-200 transition-colors">Fix & Resubmit</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {approved.length > 0 && (
-            <section>
-              <h2 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Successful Approvals</h2>
-              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden divide-y divide-gray-100">
-                {approved.map(doc => (
-                  <div key={doc.id} onClick={() => setViewingDocument(doc)} className="p-5 flex items-start gap-4 hover:bg-green-50 transition-colors cursor-pointer border-l-4 border-l-green-500">
-                    <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg bg-green-100 text-green-600">✅</div>
-                    <div className="flex-1">
-                      <div className="flex justify-between">
-                        <h4 className="text-sm font-bold text-gray-900">Fully Approved: {doc.title}</h4>
-                        <span className="text-xs text-gray-400 font-medium whitespace-nowrap ml-4">{timeAgo(doc.updated_at || doc.created_at)}</span>
-                      </div>
-                      <p className="text-sm text-gray-500 mt-1">Your submission has completed the workflow successfully.</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {(pending.length === 0 && rejected.length === 0 && approved.length === 0) && (
-            <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
-              <p className="text-4xl mb-3">🔔</p>
-              <p className="font-semibold text-lg">No notifications</p>
-              <p className="text-sm mt-1">You're all caught up!</p>
-            </div>
+          {unreadCount > 0 && (
+            <button
+              onClick={markAllRead}
+              className="text-sm font-semibold text-blue-600 hover:text-blue-800 border border-blue-200 px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors"
+            >
+              ✓ Mark all as read ({unreadCount})
+            </button>
           )}
         </div>
+
+        {notifications.length === 0 ? (
+          <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
+            <p className="text-4xl mb-3">🔔</p>
+            <p className="font-semibold text-lg">No notifications yet</p>
+            <p className="text-sm mt-1">You're all caught up!</p>
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden divide-y divide-gray-100">
+            {notifications.map(notif => {
+              const style = typeStyles[notif.type] || typeStyles.info;
+              return (
+                <div
+                  key={notif.id}
+                  onClick={() => {
+                    if (!notif.is_read) markOneRead(notif.id);
+                    if (notif.document_id) {
+                      const doc = documents.find(d => d.id === notif.document_id);
+                      if (doc) setViewingDocument(doc);
+                    }
+                  }}
+                  className={`p-5 flex items-start gap-4 transition-colors cursor-pointer border-l-4 ${style.border} ${style.bg} ${notif.is_read ? 'opacity-60' : ''}`}
+                >
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg bg-gray-100 shrink-0">{style.icon}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-start gap-2">
+                      <h4 className={`text-sm font-bold ${notif.is_read ? 'text-gray-600' : 'text-gray-900'}`}>{notif.title}</h4>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {!notif.is_read && <span className={`w-2 h-2 rounded-full ${style.dot} shrink-0`} />}
+                        <span className="text-xs text-gray-400 whitespace-nowrap">{timeAgo(notif.created_at)}</span>
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-500 mt-0.5">{notif.body}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   };
@@ -1206,24 +1187,9 @@ const Dashboard = () => {
               <svg className="w-5 h-5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
               Notifications
             </div>
-            {(() => {
-              const myRejected = filteredDocs.filter(d => d.submitter_id === user.id && d.status === 'Rejected').length;
-              const myApproved = filteredDocs.filter(d => d.submitter_id === user.id && d.status === 'Approved').length;
-              const myTasks = filteredDocs.filter(d => {
-                if (d.status !== 'Pending' || d.submitter_id === user.id) return false;
-                const isDirectAssignee = d.current_assignee_id === user?.id;
-                const isRoleAssignee = !d.current_assignee_id && d.current_role_id === user?.role_id && (!d.current_department_id || d.current_department_id === user?.department_id);
-                const branchData = d.parallel_branch_data;
-                const isParallelAssignee = Array.isArray(branchData) && branchData.some(b =>
-                  b.status === 'Pending' && (b.assigneeId === user?.id || (b.roleId === user?.role_id && (!b.departmentId || b.departmentId === user?.department_id)))
-                );
-                return isDirectAssignee || isRoleAssignee || isParallelAssignee;
-              }).length;
-              const total = myRejected + myTasks;
-              return total > 0 ? (
-                <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">{total}</span>
-              ) : null;
-            })()}
+            {unreadCount > 0 && (
+              <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">{unreadCount}</span>
+            )}
           </button>
 
           <button onClick={() => setActiveTab('tasks')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'tasks' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
@@ -1270,8 +1236,8 @@ const Dashboard = () => {
             </button>
             <button onClick={() => setActiveTab('notifications')} className="relative text-gray-400 hover:text-gray-600 transition-colors">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
-              {filteredDocs.filter(d => d.status === 'Pending' && d.submitter_id !== user.id).length > 0 && (
-                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 border-2 border-white rounded-full"></span>
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 border-2 border-white rounded-full text-white text-[9px] font-bold flex items-center justify-center">{unreadCount > 9 ? '9+' : unreadCount}</span>
               )}
             </button>
             <div className="h-8 w-px bg-gray-200 hidden sm:block"></div>
