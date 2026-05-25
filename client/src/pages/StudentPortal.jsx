@@ -615,7 +615,7 @@ const StudentPortal = () => {
                     {navItems.map(({ key, label, Icon }) => (
                         <button
                             key={key}
-                            onClick={() => setActiveView(key)}
+                            onClick={() => { setActiveView(key); setSearch(''); }}
                             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeView === key
                                 ? 'bg-blue-50 text-blue-600'
                                 : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
@@ -665,7 +665,7 @@ const StudentPortal = () => {
                 <div className="flex items-center gap-3 ml-auto">
                     <button onClick={() => window.document.documentElement.classList.toggle('dark-theme')} className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">🌙</button>
                     <button
-                        onClick={() => setActiveView('notifications')}
+                        onClick={() => { setActiveView('notifications'); setSearch(''); }}
                         className="w-9 h-9 flex items-center justify-center text-gray-500 hover:bg-gray-100 rounded-lg transition-colors relative"
                     >
                         <IcoBell />
