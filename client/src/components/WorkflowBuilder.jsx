@@ -798,6 +798,10 @@ const WorkflowBuilderInner = () => {
   // Checks validation rules and returns an array of error messages.
   const getValidationErrors = () => {
     const errors = [];
+    if (nodes.length === 0) {
+      errors.push("Workflow is empty. Please add at least one step.");
+      return errors;
+    }
     nodes.forEach(n => {
       if (n.type === 'task') {
         const hasAssignee = !!n.data.assignee;
@@ -828,10 +832,11 @@ const WorkflowBuilderInner = () => {
     const errors = getValidationErrors();
     if (errors.length > 0) {
       showConfirm(
-        '⚠️ Validation Warnings',
-        [...errors, "Publishing with these errors might cause issues for users. Publish anyway?"],
-        () => doSave(true),
-        'Publish Anyway'
+        '⛔ Publish Blocked: Validation Errors',
+        [...errors, "You must fix these errors before the workflow can be published. You can still save your progress as a draft."],
+        null,
+        'Understood',
+        'error'
       );
       return;
     }
