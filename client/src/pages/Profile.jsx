@@ -126,9 +126,9 @@ const Profile = () => {
               <input
                 type="text"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
-                required
+                readOnly
+                tabIndex="-1"
+                className="w-full px-4 py-2 border border-gray-200 bg-gray-50 text-gray-600 rounded-md cursor-not-allowed pointer-events-none focus:outline-none"
               />
             </div>
 
