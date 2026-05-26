@@ -304,21 +304,29 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                 <option value="">-- Select Assignee --</option>
                 
                 <optgroup label="Applicant's Department (Dynamic)">
-                  {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false).map(r => (
+                  {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false && staffList.some(s => s.role_id === r.id)).map(r => (
                     <option key={`dyn-${r.id}`} value={`ROLE:INITIATOR_DEPT:${r.id}`}>Applicant's {r.name}</option>
                   ))}
                 </optgroup>
 
-                {departments.map(d => (
-                  <optgroup key={`dept-${d.id}`} label={d.name}>
-                    {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false).map(r => (
-                      <option key={`spec-${r.id}-${d.id}`} value={`ROLE:SPECIFIC:${r.id}:${d.id}`}>{d.name} — {r.name}</option>
-                    ))}
-                  </optgroup>
-                ))}
+                {departments.map(d => {
+                  const validCombos = rolesList.filter(r => 
+                    (r.is_active || r.id <= 3) && 
+                    r.can_approve !== false && 
+                    staffList.some(s => s.role_id === r.id && s.department_id === d.id)
+                  );
+                  if (validCombos.length === 0) return null;
+                  return (
+                    <optgroup key={`dept-${d.id}`} label={d.name}>
+                      {validCombos.map(r => (
+                        <option key={`spec-${r.id}-${d.id}`} value={`ROLE:SPECIFIC:${r.id}:${d.id}`}>{d.name} — {r.name}</option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
 
                 <optgroup label="Global Roles (Any Department)">
-                  {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false).map(r => (
+                  {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false && staffList.some(s => s.role_id === r.id)).map(r => (
                     <option key={`any-${r.id}`} value={`ROLE:ANY:${r.id}`}>Any {r.name}</option>
                   ))}
                 </optgroup>
@@ -817,6 +825,52 @@ const WorkflowBuilderInner = () => {
         if (!connectedNodeIds.has(n.id)) errors.push(`Node "${n.data.label}" is disconnected.`);
       });
     }
+
+    // 3. Circular dependency (Deadlock) check using DFS
+    const adj = {};
+    nodes.forEach(n => { adj[n.id] = []; });
+    edges.forEach(e => {
+      if (adj[e.source]) {
+        adj[e.source].push(e.target);
+      }
+    });
+
+    const visited = {};
+    const recStack = {};
+    let cycleFound = false;
+
+    const dfs = (nodeId) => {
+      if (!visited[nodeId]) {
+        visited[nodeId] = true;
+        recStack[nodeId] = true;
+
+        const neighbors = adj[nodeId] || [];
+        for (let i = 0; i < neighbors.length; i++) {
+          const nextNode = neighbors[i];
+          if (!visited[nextNode] && dfs(nextNode)) {
+            return true;
+          } else if (recStack[nextNode]) {
+            return true;
+          }
+        }
+      }
+      recStack[nodeId] = false;
+      return false;
+    };
+
+    for (let i = 0; i < nodes.length; i++) {
+      if (!visited[nodes[i].id]) {
+        if (dfs(nodes[i].id)) {
+          cycleFound = true;
+          break;
+        }
+      }
+    }
+
+    if (cycleFound) {
+      errors.push("Workflow contains circular paths (deadlocks / infinite loops). Please resolve them to prevent execution failure.");
+    }
+
     return errors;
   };
 
@@ -876,11 +930,42 @@ const WorkflowBuilderInner = () => {
       // Re-fetch list
       const wfRes = await api.get('/workflows');
       setSavedWorkflows(wfRes.data);
+      return true;
     } catch (err) {
       showToast('error', 'Failed to save workflow. Please try again.');
+      return false;
     } finally {
       setIsValidating(false);
     }
+  };
+
+  const handleCreateNew = async () => {
+    if (nodes.length > 0) {
+      if (!workflowName) {
+        showToast('error', 'Please enter a workflow name to save current progress before creating a new one.');
+        return;
+      }
+      let isPublished = false;
+      if (selectedWorkflowId) {
+        const loadedWorkflow = savedWorkflows.find(w => w.id === parseInt(selectedWorkflowId));
+        if (loadedWorkflow) {
+          const meta = (typeof loadedWorkflow.flow_structure === 'string' ? JSON.parse(loadedWorkflow.flow_structure) : loadedWorkflow.flow_structure).metadata;
+          isPublished = meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
+        }
+      }
+      const saved = await doSave(isPublished);
+      if (!saved) return;
+    }
+    
+    setNodes([]); 
+    setEdges([]); 
+    setSelectedNodeId(null); 
+    setAllowedSubmitters([]); 
+    setPrerequisiteWorkflowId(''); 
+    setClearanceWorkflowIds(''); 
+    setSelectedWorkflowId(''); 
+    setWorkflowName('');
+    showToast('success', 'Ready to create a new workflow!');
   };
 
   const handleClear = () => {
@@ -1076,6 +1161,11 @@ const WorkflowBuilderInner = () => {
         <button onClick={() => setIsBrowserOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg text-sm font-bold text-gray-700 transition-colors">
           <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
           Browse Workflows
+        </button>
+
+        <button onClick={handleCreateNew} disabled={isValidating} className={`flex items-center gap-2 px-4 py-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-sm font-bold text-blue-700 transition-colors ${isValidating ? 'opacity-70' : ''}`}>
+          <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+          Create New
         </button>
 
         {selectedWorkflowId && (() => {

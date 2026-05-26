@@ -19,3 +19,7 @@ CREATE TABLE IF NOT EXISTS document_attachments (
     description TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Missing parallel branches column
+ALTER TABLE documents
+  ADD COLUMN IF NOT EXISTS parallel_branch_data JSONB;
