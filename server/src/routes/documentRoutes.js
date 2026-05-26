@@ -7,10 +7,59 @@ const Tesseract = require('tesseract.js');
 const crypto = require('crypto');
 const fs = require('fs');
 const pdfParse = require('pdf-parse');
+const nodemailer = require('nodemailer');
 
 const pool = new Pool({
     user: process.env.DB_USER, host: process.env.DB_HOST, database: process.env.DB_NAME, password: process.env.DB_PASSWORD, port: process.env.DB_PORT,
 });
+
+// Mailer Configuration
+const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT),
+    secure: process.env.SMTP_PORT == 465,
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    tls: { ciphers: 'SSLv3' }
+});
+
+const sendNotificationEmail = async (userId, subject, message) => {
+    try {
+        const userQuery = await pool.query('SELECT email, name, email_notifications FROM users WHERE id = $1', [userId]);
+        if (userQuery.rows.length > 0) {
+            const { email, name, email_notifications } = userQuery.rows[0];
+            if (email_notifications === false) return;
+
+            await transporter.sendMail({
+                from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
+                to: email,
+                subject: subject,
+                html: `
+                    <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eaeaea; border-radius: 8px; max-width: 500px;">
+                        <h2 style="color: #4f46e5;">E-flow Notification</h2>
+                        <p>Hello ${name},</p>
+                        <p style="font-size: 16px; color: #374151;">${message}</p>
+                        <hr style="border: none; border-top: 1px solid #eaeaea; margin: 20px 0;" />
+                        <p style="font-size: 12px; color: #9ca3af;">Please log in to your dashboard to view the details.</p>
+                    </div>
+                `
+            });
+        }
+    } catch (err) {
+        console.error('Email failed:', err.message);
+    }
+};
+
+const insertNotification = async (userId, title, body, type = 'info', documentId = null) => {
+    if (!userId) return;
+    try {
+        await pool.query(
+            'INSERT INTO notifications (user_id, title, body, type, document_id) VALUES ($1, $2, $3, $4, $5)',
+            [userId, title, body, type, documentId]
+        );
+    } catch (err) {
+        console.error('Failed to insert notification:', err.message);
+    }
+};
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'uploads/'),
@@ -188,6 +237,21 @@ router.post('/upload', authenticateToken, (req, res, next) => upload.single('doc
             }
         }
 
+        if (initialAssigneeId) {
+            await sendNotificationEmail(
+                initialAssigneeId,
+                'New Document Ready for Review',
+                `A new document <b>"${title}"</b> has been routed to your queue.`
+            );
+            await insertNotification(
+                initialAssigneeId,
+                'New Task Assigned',
+                `You have been assigned to review: ${title}`,
+                'info',
+                newDoc.rows[0].id
+            );
+        }
+
         res.status(201).json({ message: 'Document submitted', document: newDoc.rows[0] });
     } catch (err) {
         console.error(err);
@@ -320,6 +384,22 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
         );
 
         await pool.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Document Resubmitted by User')", [documentId, req.user.id]);
+
+        if (initialAssigneeId) {
+            await sendNotificationEmail(
+                initialAssigneeId,
+                'Resubmitted Document Ready for Review',
+                `A previously rejected document has been resubmitted and routed to your queue.`
+            );
+            await insertNotification(
+                initialAssigneeId,
+                'Task Resubmitted',
+                `A document has been resubmitted for your review.`,
+                'info',
+                documentId
+            );
+        }
+
         res.status(200).json({ message: 'Document resubmitted successfully' });
     } catch (err) {
         console.error(err);

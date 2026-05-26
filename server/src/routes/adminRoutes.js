@@ -605,7 +605,7 @@ router.get('/audit-logs/export', authenticateToken, verifyAdmin, async (req, res
         result.rows.forEach(log => {
             const d = new Date(log.timestamp);
             const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
-            
+
             const action = log.action ? log.action.replace(/"/g, '""') : '';
             const doc = log.document_title ? log.document_title.replace(/"/g, '""') : 'System';
             const user = log.user_name ? log.user_name.replace(/"/g, '""') : 'System';
