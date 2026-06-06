@@ -105,6 +105,15 @@ const SpawnNode = ({ id, data, selected }) => (
   </>
 );
 
+// 7. Join / Merge Node
+const JoinNode = ({ id, data, selected }) => (
+  <>
+    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-teal-500" />
+    <BaseNode id={id} typeName="Merge Gate" icon="⛙" bgColor="bg-teal-500" borderColor="border-teal-200" textColor="text-teal-600" title={data.label || 'Join Paths'} badge="Wait for all" selected={selected} />
+    <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-teal-500" />
+  </>
+);
+
 // ==========================================
 // 2b. EMAIL PROPERTIES SUB-COMPONENT
 // ==========================================
@@ -548,6 +557,13 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
           </div>
         )}
 
+        {/* 7. JOIN PROPERTIES */}
+        {selectedNode.type === 'join' && (
+          <div className="bg-teal-50 p-3 rounded border border-teal-200 text-xs text-teal-800">
+            Connect multiple branches into this node. The workflow will wait until all incoming parallel branches reach this point before continuing.
+          </div>
+        )}
+
         {/* 6. SPAWN PROPERTIES */}
         {selectedNode.type === 'spawn' && (
           <div>
@@ -608,6 +624,9 @@ const Sidebar = () => {
         </div>
         <div className="bg-white border hover:border-orange-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'parallel', 'Parallel Split')} draggable>
           <span className="text-orange-500">⑂</span> Parallel Split
+        </div>
+        <div className="bg-white border hover:border-teal-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'join', 'Merge Paths')} draggable>
+          <span className="text-teal-500">⛙</span> Merge Gate (Join)
         </div>
 
         <div className="text-[10px] font-bold text-gray-400 uppercase mt-4">Automation</div>
@@ -671,7 +690,8 @@ const WorkflowBuilderInner = () => {
     email: EmailNode,
     delay: DelayNode,
     parallel: ParallelNode,
-    spawn: SpawnNode
+    spawn: SpawnNode,
+    join: JoinNode
   }), []);
 
   // Fetch init data

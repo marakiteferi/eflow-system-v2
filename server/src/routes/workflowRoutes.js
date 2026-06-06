@@ -98,6 +98,20 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 });
 
+// GET: Fetch a single workflow by ID
+router.get('/:id', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM workflows WHERE id = $1', [req.params.id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: 'Workflow not found' });
+        }
+        res.status(200).json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Error fetching workflow' });
+    }
+});
+
 // PUT: Update an existing workflow
 router.put('/:id', authenticateToken, async (req, res) => {
     const { name, flow_structure } = req.body;

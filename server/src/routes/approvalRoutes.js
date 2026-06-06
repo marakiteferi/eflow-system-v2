@@ -586,6 +586,12 @@ router.post('/approve', authenticateToken, async (req, res) => {
                     // Delay nodes: for now, treat as transparent (no actual scheduling yet)
                     currentId = targetNode.id;
 
+                } else if (targetNode.type === 'join') {
+                    // ✅ JOIN NODE: Transparent merge gate.
+                    // The workflow engine naturally waits at parallel splits. Once all parallel branches 
+                    // approve, it continues. When it hits a join node, it just passes straight through to the next task.
+                    currentId = targetNode.id;
+
                 } else if (targetNode.type === 'parallel') {
                     // ✅ PARALLEL NODE: Fan out to ALL connected branches simultaneously
                     const parallelOutgoing = edges.filter(e => e.source === targetNode.id);

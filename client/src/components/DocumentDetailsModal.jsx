@@ -8,6 +8,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
   const [clearances, setClearances] = useState([]);
   const [attachments, setAttachments] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [workflow, setWorkflow] = useState(null);
   const [attachFile, setAttachFile] = useState(null);
   const [attachDesc, setAttachDesc] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -47,13 +48,14 @@ const DocumentDetailsModal = ({ document, onClose }) => {
     const fetchHistory = async () => {
       if (!document) return; // Safe guard inside the hook
       try {
-        const [histRes, clearRes, attachRes, versionsRes, vLinksRes, tagHistRes] = await Promise.all([
+        const [histRes, clearRes, attachRes, versionsRes, vLinksRes, tagHistRes, wfRes] = await Promise.all([
           api.get(`/documents/${document.id}/history`),
           api.get(`/documents/${document.id}/clearances`).catch(() => ({ data: [] })),
           api.get(`/documents/${document.id}/attachments`).catch(() => ({ data: [] })),
           api.get(`/documents/${document.id}/versions`).catch(() => ({ data: [] })),
           api.get(`/documents/${document.id}/verification-links`).catch(() => ({ data: [] })),
-          api.get(`/documents/${document.id}/tag-history`).catch(() => ({ data: [] }))
+          api.get(`/documents/${document.id}/tag-history`).catch(() => ({ data: [] })),
+          document.workflow_id ? api.get(`/workflows/${document.workflow_id}`).catch(() => ({ data: null })) : Promise.resolve({ data: null })
         ]);
         setHistory(histRes.data);
         setClearances(clearRes.data);
@@ -61,6 +63,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
         setVersions(versionsRes.data);
         setVerificationLinks(vLinksRes.data || []);
         setTagHistory(tagHistRes.data || []);
+        setWorkflow(wfRes.data);
       } catch (error) {
         console.error('Failed to fetch history:', error);
       } finally {
@@ -95,6 +98,136 @@ const DocumentDetailsModal = ({ document, onClose }) => {
     container.addEventListener('wheel', handleNativeWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleNativeWheel);
   }, [isImage]);
+
+  // HOOK 4: Calculate Progress Tracker Steps
+  const progressSteps = React.useMemo(() => {
+    if (!workflow || !workflow.flow_structure) return [];
+    
+    let flowData = workflow.flow_structure;
+    if (typeof flowData === 'string') {
+      try { flowData = JSON.parse(flowData); } catch(e) { return []; }
+    }
+    
+    const nodes = flowData.nodes || [];
+    const edges = flowData.edges || [];
+    
+    let startNode = nodes.find(n => !edges.some(e => e.target === n.id)) || nodes[0];
+    if (!startNode) return [];
+
+    let currentId = startNode.id;
+    let path = [];
+    let visited = new Set();
+    
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const node = nodes.find(n => n.id === currentId);
+      if (!node) break;
+
+      if (node.type === 'parallel') {
+         const parallelOutgoing = edges.filter(e => e.source === node.id);
+         let branchTaskNodes = [];
+         let branchLabels = [];
+         for (const pe of parallelOutgoing) {
+            let bNode = nodes.find(n => n.id === pe.target);
+            while (bNode && !['task', 'join'].includes(bNode.type)) {
+               const nextEdge = edges.find(e => e.source === bNode.id);
+               if (nextEdge) bNode = nodes.find(n => n.id === nextEdge.target);
+               else { bNode = null; break; }
+            }
+            if (bNode && bNode.type === 'task') {
+                branchTaskNodes.push(bNode);
+                branchLabels.push(bNode.data?.label || 'Approval');
+            }
+         }
+         
+         if (branchTaskNodes.length > 0) {
+             path.push({
+                 type: 'parallel_group',
+                 id: node.id,
+                 nodes: branchTaskNodes,
+                 label: `Parallel Review`,
+                 subLabels: branchLabels,
+                 totalNeeded: branchTaskNodes.length
+             });
+             branchTaskNodes.forEach(t => visited.add(t.id));
+             
+             const firstTask = branchTaskNodes[0];
+             let outgoing = edges.filter(e => e.source === firstTask.id);
+             currentId = outgoing.length > 0 ? outgoing[0].target : null;
+             continue;
+         }
+      } else if (node.type === 'task') {
+         path.push({
+             type: 'task',
+             id: node.id,
+             label: node.data?.label || 'Approval Task'
+         });
+      } else if (node.type === 'condition') {
+          let docTag = (document.metadata_tag || '').toLowerCase().trim();
+          let condVal = (node.data?.conditionValue || '').toLowerCase().trim();
+          
+          path.push({
+              type: 'condition_note',
+              id: node.id,
+              label: `Decision: ${node.data?.label || 'Condition Check'}`
+          });
+          
+          let outgoingEdges = edges.filter(e => e.source === currentId);
+          let edge;
+          if (docTag) {
+              let expectedHandle = docTag === condVal ? 'true' : 'false';
+              edge = outgoingEdges.find(e => e.sourceHandle === expectedHandle) || outgoingEdges[0];
+          } else {
+              // Predict true branch if document hasn't been tagged yet
+              edge = outgoingEdges.find(e => e.sourceHandle === 'true') || outgoingEdges[0];
+          }
+          currentId = edge ? edge.target : null;
+          continue;
+      }
+      
+      let outgoingEdges = edges.filter(e => e.source === currentId);
+      if (outgoingEdges.length === 0) break;
+      
+      let nextId = outgoingEdges[0].target;
+      let nextNode = nodes.find(n => n.id === nextId);
+      
+      while(nextNode && ['join', 'email', 'spawn', 'delay', 'start'].includes(nextNode.type)) {
+          visited.add(nextNode.id);
+          let out = edges.filter(e => e.source === nextNode.id);
+          if (out.length > 0) {
+              nextId = out[0].target;
+              nextNode = nodes.find(n => n.id === nextId);
+          } else {
+              nextNode = null;
+              nextId = null;
+          }
+      }
+      currentId = nextId;
+    }
+    
+    return path;
+  }, [workflow, document]);
+
+  const getStepStatus = (step) => {
+      if (document.status === 'Approved') return 'completed';
+      if (document.status === 'Rejected' && document.current_node_id === step.id) return 'rejected';
+      
+      if (step.type === 'task') {
+          const isDone = history.some(h => h.node_id === step.id && h.status === 'Approved');
+          if (isDone) return 'completed';
+          if (document.current_node_id === step.id) return 'current';
+          
+          // Fallback heuristic: if a node appears in history with 'Approved', we mark done. 
+          // If the document is approved, all are done.
+          return 'future';
+      } else if (step.type === 'parallel_group') {
+          const approvals = history.filter(h => h.node_id === step.id && h.status === 'Approved');
+          if (approvals.length >= step.totalNeeded) return 'completed';
+          if (document.current_node_id === step.id || approvals.length > 0) return 'current';
+          return 'future';
+      }
+      return 'future';
+  };
 
   // ==========================================
   // All hooks have safely run! NOW we can do our early return.
@@ -322,6 +455,82 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                       )}
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Progress Tracker Block */}
+            {progressSteps.length > 0 && (
+              <div className="flex flex-col bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4 border-b pb-2">Document Progress Tracker</h3>
+                <div className="relative">
+                  {/* Vertical Line */}
+                  <div className="absolute left-3.5 top-2 bottom-2 w-0.5 bg-gray-200"></div>
+                  
+                  <div className="space-y-4 relative">
+                    {progressSteps.map((step, idx) => {
+                      if (step.type === 'condition_note') {
+                        return (
+                          <div key={idx} className="flex items-center gap-3 pl-10 opacity-60">
+                            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                            <span className="text-xs italic text-gray-500">{step.label}</span>
+                          </div>
+                        );
+                      }
+
+                      const status = getStepStatus(step);
+                      const isParallel = step.type === 'parallel_group';
+                      const approvals = isParallel ? history.filter(h => h.node_id === step.id && h.status === 'Approved').length : 0;
+                      
+                      let circleColor = 'border-gray-300 bg-white';
+                      let icon = <div className="w-2.5 h-2.5 rounded-full bg-gray-300"></div>;
+                      let textColor = 'text-gray-500';
+                      let labelPrefix = '';
+
+                      if (status === 'completed') {
+                        circleColor = 'border-green-500 bg-green-50';
+                        icon = <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>;
+                        textColor = 'text-gray-800 font-bold';
+                      } else if (status === 'current') {
+                        circleColor = 'border-blue-500 bg-blue-50';
+                        icon = <div className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse"></div>;
+                        textColor = 'text-blue-800 font-bold';
+                        labelPrefix = '⏳ Pending: ';
+                      } else if (status === 'rejected') {
+                        circleColor = 'border-red-500 bg-red-50';
+                        icon = <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>;
+                        textColor = 'text-red-800 font-bold';
+                        labelPrefix = '❌ Rejected: ';
+                      }
+
+                      return (
+                        <div key={idx} className="flex items-start gap-4 relative">
+                          <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center bg-white z-10 shrink-0 mt-0.5 ${circleColor}`}>
+                            {icon}
+                          </div>
+                          <div className={`flex flex-col ${status === 'future' ? 'opacity-70' : ''}`}>
+                            <span className={`text-sm ${textColor}`}>
+                              {labelPrefix}{step.label}
+                            </span>
+                            {isParallel && (
+                              <div className="flex flex-col mt-0.5">
+                                <span className="text-xs text-gray-500 font-semibold">
+                                  {approvals} of {step.totalNeeded} Approvers signed off
+                                </span>
+                                {step.subLabels && step.subLabels.length > 0 && (
+                                  <ul className="text-[11px] text-gray-400 list-disc list-inside mt-1">
+                                    {step.subLabels.map((sl, i) => (
+                                      <li key={i}>{sl}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
