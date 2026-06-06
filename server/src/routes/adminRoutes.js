@@ -86,7 +86,14 @@ router.get('/roles', authenticateToken, verifyAdmin, async (req, res) => {
             LEFT JOIN departments d ON r.department_id = d.id 
             ORDER BY r.id ASC
         `);
-        res.status(200).json(result.rows);
+        
+        const legacyRoles = [
+            { id: 1, name: 'Student', department_id: null, can_create_workflows: false, requires_workflow_approval: false, can_manage_users: false, is_active: true, sealed_at: null, sealed_by: null, is_escalation_fallback: false, can_approve: false, department_name: null },
+            { id: 2, name: 'Staff', department_id: null, can_create_workflows: false, requires_workflow_approval: false, can_manage_users: false, is_active: true, sealed_at: null, sealed_by: null, is_escalation_fallback: false, can_approve: true, department_name: null },
+            { id: 3, name: 'Super Admin', department_id: null, can_create_workflows: true, requires_workflow_approval: false, can_manage_users: true, is_active: true, sealed_at: null, sealed_by: null, is_escalation_fallback: false, can_approve: true, department_name: null }
+        ];
+
+        res.status(200).json([...legacyRoles, ...result.rows]);
     } catch (err) {
         res.status(500).json({ message: 'Error fetching roles' });
     }
@@ -179,6 +186,9 @@ router.get('/roles/:id/impact', authenticateToken, verifyAdmin, async (req, res)
 router.delete('/roles/:id', authenticateToken, verifyAdmin, async (req, res) => {
     const roleId = parseInt(req.params.id, 10);
     try {
+        if (roleId <= 3) {
+            return res.status(400).json({ message: 'Cannot seal core system roles (Student, Staff, Super Admin).' });
+        }
         // Pre-check: refuse if any documents are currently in-flight at this role
         const inFlightResult = await pool.query(`
             SELECT COUNT(*) as count 

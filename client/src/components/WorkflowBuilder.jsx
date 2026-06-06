@@ -649,6 +649,70 @@ const Sidebar = () => {
 
 
 // ==========================================
+// 3a. REUSABLE UI COMPONENTS
+// ==========================================
+
+const MultiSelectDropdown = ({ label, options, selectedIds, onChange, title }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setIsOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedCount = selectedIds ? selectedIds.split(',').filter(Boolean).length : 0;
+
+  return (
+    <div className="relative group hidden sm:flex items-center gap-2" ref={dropdownRef} title={title}>
+      <span className="text-xs font-bold text-gray-500">{label}:</span>
+      <div className="relative">
+        <button 
+          onClick={() => setIsOpen(!isOpen)}
+          className="px-3 py-1.5 border border-gray-300 rounded text-xs bg-white text-gray-700 hover:border-blue-400 focus:outline-none focus:border-blue-500 min-w-[120px] text-left flex justify-between items-center"
+        >
+          <span>{selectedCount === 0 ? 'None Selected' : `${selectedCount} Selected`}</span>
+          <span className="ml-2 text-[10px]">▼</span>
+        </button>
+        
+        {isOpen && (
+          <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 shadow-xl rounded-md z-50 max-h-60 overflow-y-auto">
+            <div className="p-2 space-y-1">
+              {options.length === 0 && <div className="text-xs text-gray-500 p-1">No workflows available</div>}
+              {options.map(opt => {
+                const isChecked = selectedIds ? selectedIds.split(',').includes(opt.id.toString()) : false;
+                return (
+                  <label key={opt.id} className="flex items-start gap-2 p-1.5 hover:bg-blue-50 rounded cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={isChecked}
+                      onChange={(e) => {
+                        let ids = selectedIds ? selectedIds.split(',').filter(Boolean) : [];
+                        if (e.target.checked) ids.push(opt.id.toString());
+                        else ids = ids.filter(id => id !== opt.id.toString());
+                        onChange(ids.join(','));
+                      }}
+                      className="mt-0.5 rounded text-blue-600 focus:ring-blue-500 border-gray-300"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium text-gray-800 leading-tight">{opt.name}</span>
+                      <span className="text-[10px] text-gray-500">ID: {opt.id}</span>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ==========================================
 // 4. MAIN BUILDER COMPONENT (INTERNAL)
 // ==========================================
 const WorkflowBuilderInner = () => {
@@ -662,7 +726,7 @@ const WorkflowBuilderInner = () => {
   const [rolesList, setRolesList] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [allowedSubmitters, setAllowedSubmitters] = useState([]);
-  const [prerequisiteWorkflowId, setPrerequisiteWorkflowId] = useState('');
+  const [prerequisiteWorkflowIds, setPrerequisiteWorkflowIds] = useState('');
   const [clearanceWorkflowIds, setClearanceWorkflowIds] = useState('');
 
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -811,7 +875,7 @@ const WorkflowBuilderInner = () => {
       }));
       setNodes(loadedNodes); setEdges(flowData.edges || []);
       setAllowedSubmitters(flowData.metadata?.allowedSubmitters || []);
-      setPrerequisiteWorkflowId(flowData.metadata?.prerequisiteWorkflowId || '');
+      setPrerequisiteWorkflowIds(flowData.metadata?.prerequisiteWorkflowIds?.join(',') || '');
       setClearanceWorkflowIds(flowData.metadata?.clearanceWorkflowIds?.join(',') || '');
     }
   };
@@ -928,7 +992,7 @@ const WorkflowBuilderInner = () => {
         delete cleanData.departments;
         return { ...n, data: cleanData };
       });
-      const metadataObj = { allowedSubmitters, prerequisiteWorkflowId: prerequisiteWorkflowId || null, isPublished };
+      const metadataObj = { allowedSubmitters, prerequisiteWorkflowIds: prerequisiteWorkflowIds ? prerequisiteWorkflowIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)) : null, isPublished };
       if (clearanceWorkflowIds) {
         metadataObj.clearanceWorkflowIds = clearanceWorkflowIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
       }
@@ -981,7 +1045,7 @@ const WorkflowBuilderInner = () => {
     setEdges([]); 
     setSelectedNodeId(null); 
     setAllowedSubmitters([]); 
-    setPrerequisiteWorkflowId(''); 
+    setPrerequisiteWorkflowIds(''); 
     setClearanceWorkflowIds(''); 
     setSelectedWorkflowId(''); 
     setWorkflowName('');
@@ -992,7 +1056,7 @@ const WorkflowBuilderInner = () => {
     showConfirm(
       '🗑️ Clear Canvas',
       ['This will remove all nodes and connections from the canvas. This cannot be undone.'],
-      () => { setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowId(''); setClearanceWorkflowIds(''); },
+      () => { setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowIds(''); setClearanceWorkflowIds(''); },
       'Clear Canvas',
       'danger'
     );
@@ -1008,7 +1072,7 @@ const WorkflowBuilderInner = () => {
           await api.delete(`/workflows/${selectedWorkflowId}`);
           showToast('success', 'Workflow deleted successfully!');
           // Clear current
-          setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowId(''); setClearanceWorkflowIds(''); setSelectedWorkflowId(''); setWorkflowName('');
+          setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowIds(''); setClearanceWorkflowIds(''); setSelectedWorkflowId(''); setWorkflowName('');
           // Refetch
           const wfRes = await api.get('/workflows');
           setSavedWorkflows(wfRes.data);
@@ -1210,87 +1274,29 @@ const WorkflowBuilderInner = () => {
 
         <div className="h-6 w-px bg-gray-200 hidden sm:block"></div>
 
-        <div className="flex items-center gap-2 relative group hidden sm:flex">
-          <span className="text-xs font-bold text-gray-500">Allowed Roles:</span>
-          <div className="relative cursor-pointer">
-            <div className="px-3 py-1.5 border border-gray-300 rounded text-xs bg-white text-gray-700 font-medium hover:border-blue-400 transition-colors flex items-center gap-2">
-              <span>{allowedSubmitters.length === 0 ? 'All Roles (Global)' : `${allowedSubmitters.length} Roles Selected`}</span>
-              <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-            </div>
-            {/* Dropdown Menu */}
-            <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 shadow-xl rounded-lg py-2 hidden group-hover:block z-50">
-              <div className="px-3 pb-2 border-b border-gray-100 mb-1">
-                <p className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">Select Roles</p>
-              </div>
-              <div className="max-h-56 overflow-y-auto">
-                <label className="flex items-center gap-3 px-3 py-1.5 hover:bg-blue-50 cursor-pointer transition-colors group/item">
-                  <input type="checkbox" checked={allowedSubmitters.includes(1)} onChange={() => handleRoleToggle(1)} className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer" />
-                  <span className={`text-sm ${allowedSubmitters.includes(1) ? 'text-blue-700 font-medium' : 'text-gray-700'}`}>Student (Legacy)</span>
-                </label>
-                <label className="flex items-center gap-3 px-3 py-1.5 hover:bg-blue-50 cursor-pointer transition-colors group/item">
-                  <input type="checkbox" checked={allowedSubmitters.includes(2)} onChange={() => handleRoleToggle(2)} className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer" />
-                  <span className={`text-sm ${allowedSubmitters.includes(2) ? 'text-blue-700 font-medium' : 'text-gray-700'}`}>Staff (Legacy)</span>
-                </label>
-                {rolesList.filter(r => r.is_active).map(role => (
-                  <label key={role.id} className="flex items-center gap-3 px-3 py-1.5 hover:bg-blue-50 cursor-pointer transition-colors group/item">
-                    <input type="checkbox" checked={allowedSubmitters.includes(role.id)} onChange={() => handleRoleToggle(role.id)} className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer" />
-                    <span className={`text-sm ${allowedSubmitters.includes(role.id) ? 'text-blue-700 font-medium' : 'text-gray-700'}`}>{role.name}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
+        <MultiSelectDropdown
+          label="Applies To Roles"
+          options={rolesList}
+          selectedIds={allowedSubmitters.join(',')}
+          onChange={(val) => setAllowedSubmitters(val ? val.split(',').filter(Boolean).map(Number) : [])}
+          title="Roles that are allowed to start this workflow."
+        />
 
-        <div className="flex items-center gap-2 relative group hidden sm:flex">
-          <span className="text-xs font-bold text-gray-500">Prerequisite:</span>
-          <select 
-            value={prerequisiteWorkflowId} 
-            onChange={(e) => setPrerequisiteWorkflowId(e.target.value)}
-            className="px-3 py-1.5 border border-gray-300 rounded text-xs bg-white text-gray-700 hover:border-blue-400 focus:outline-none focus:border-blue-500 max-w-[150px]"
-          >
-            <option value="">None</option>
-            {savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0)).map(wf => (
-              <option key={wf.id} value={wf.id}>{wf.name}</option>
-            ))}
-          </select>
-        </div>
+        <MultiSelectDropdown
+          label="Prerequisites"
+          options={savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0))}
+          selectedIds={prerequisiteWorkflowIds}
+          onChange={setPrerequisiteWorkflowIds}
+          title="Workflows that must be fully approved before a user can submit this document."
+        />
 
-        <div className="flex items-center gap-2 relative group hidden lg:flex">
-          <span className="text-xs font-bold text-gray-500" title="Workflow IDs that must be approved before this document can be fully completely routed.">Clearances:</span>
-          <div className="relative">
-            <select 
-              className="px-3 py-1.5 border border-gray-300 rounded text-xs bg-white text-gray-700 hover:border-blue-400 focus:outline-none focus:border-blue-500 max-w-[150px] appearance-none"
-              defaultValue=""
-              onChange={(e) => {
-                const val = e.target.value;
-                if (!val) return;
-                let ids = clearanceWorkflowIds ? clearanceWorkflowIds.split(',').filter(Boolean) : [];
-                if (!ids.includes(val)) ids.push(val);
-                setClearanceWorkflowIds(ids.join(','));
-                e.target.value = "";
-              }}
-            >
-              <option value="">+ Add Clearance</option>
-              {savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0)).map(wf => (
-                <option key={wf.id} value={wf.id}>{wf.name}</option>
-              ))}
-            </select>
-          </div>
-          {clearanceWorkflowIds && (
-             <div className="flex gap-1 flex-wrap max-w-[200px]">
-               {clearanceWorkflowIds.split(',').filter(Boolean).map(id => {
-                  const wf = savedWorkflows.find(w => w.id === parseInt(id));
-                  return (
-                    <span key={id} className="bg-gray-100 border border-gray-200 text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1">
-                      <span className="truncate max-w-[80px]" title={wf?.name}>{wf?.name || `ID:${id}`}</span>
-                      <button onClick={() => setClearanceWorkflowIds(clearanceWorkflowIds.split(',').filter(x => x !== id).join(','))} className="text-red-500 font-bold">&times;</button>
-                    </span>
-                  );
-               })}
-             </div>
-          )}
-        </div>
+        <MultiSelectDropdown
+          label="Clearances"
+          options={savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0))}
+          selectedIds={clearanceWorkflowIds}
+          onChange={setClearanceWorkflowIds}
+          title="Sub-workflows spawned on submission that must be approved before this document can be completed."
+        />
 
         <div className="flex-grow"></div>
 
