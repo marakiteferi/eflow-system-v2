@@ -159,14 +159,16 @@ router.post('/upload', authenticateToken, (req, res, next) => upload.single('doc
                 const edges = flowData.edges || [];
 
                 // Prerequisite Workflow Check
-                const prereqWfId = flowData.metadata?.prerequisiteWorkflowId;
-                if (prereqWfId) {
-                    const prereqCheck = await pool.query(
-                        'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
-                        [prereqWfId, submitter_id, 'Approved']
-                    );
-                    if (prereqCheck.rows.length === 0) {
-                        return res.status(400).json({ message: 'You must complete the prerequisite workflow before submitting this request.' });
+                const prereqWfIds = flowData.metadata?.prerequisiteWorkflowIds;
+                if (prereqWfIds && prereqWfIds.length > 0) {
+                    for (const pid of prereqWfIds) {
+                        const prereqCheck = await pool.query(
+                            'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
+                            [pid, submitter_id, 'Approved']
+                        );
+                        if (prereqCheck.rows.length === 0) {
+                            return res.status(400).json({ message: 'You must complete all prerequisite workflows before submitting this request.' });
+                        }
                     }
                 }
 
@@ -283,14 +285,16 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
                 const edges = flowData.edges || [];
 
                 // Prerequisite Workflow Check
-                const prereqWfId = flowData.metadata?.prerequisiteWorkflowId;
-                if (prereqWfId) {
-                    const prereqCheck = await pool.query(
-                        'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
-                        [prereqWfId, req.user.id, 'Approved']
-                    );
-                    if (prereqCheck.rows.length === 0) {
-                        return res.status(400).json({ message: 'You must complete the prerequisite workflow before resubmitting this request.' });
+                const prereqWfIds = flowData.metadata?.prerequisiteWorkflowIds;
+                if (prereqWfIds && prereqWfIds.length > 0) {
+                    for (const pid of prereqWfIds) {
+                        const prereqCheck = await pool.query(
+                            'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
+                            [pid, req.user.id, 'Approved']
+                        );
+                        if (prereqCheck.rows.length === 0) {
+                            return res.status(400).json({ message: 'You must complete all prerequisite workflows before resubmitting this request.' });
+                        }
                     }
                 }
 
@@ -379,6 +383,7 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
             `UPDATE documents SET file_path = $1, extracted_text = $2, status = 'Pending',
              current_node_id = $3, current_assignee_id = $4, current_role_id = $5, current_department_id = $6,
              original_sla_deadline = $7, delegation_sla_deadline = NULL,
+             parallel_branch_data = NULL,
              updated_at = CURRENT_TIMESTAMP WHERE id = $8`,
             [req.file.path, extracted_text, initialNodeId, initialAssigneeId, initialRoleId, initialDepartmentId, originalSlaDeadline, documentId]
         );
