@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const { Pool } = require('pg');
 const authenticateToken = require('../middleware/authMiddleware');
 const { detectCircularSupervisor } = require('../utils/graphHelpers');
 const multer = require('multer');
@@ -19,10 +18,7 @@ const transporter = nodemailer.createTransport({
     tls: { ciphers: 'SSLv3' }
 });
 
-const pool = new Pool({
-    user: process.env.DB_USER, host: process.env.DB_HOST, database: process.env.DB_NAME,
-    password: process.env.DB_PASSWORD, port: process.env.DB_PORT,
-});
+const pool = require('../db');
 
 const adminOtpStore = new Map();
 

@@ -12,7 +12,7 @@ const Profile = () => {
   const isStaffOrAdmin = user && user.role_id !== 1;
 
   // Account settings
-  const [name, setName] = useState(user?.name || '');
+  const [name] = useState(user?.name || '');
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');

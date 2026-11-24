@@ -13,7 +13,8 @@ In many universities, simple requests like a clearance form still mean walking b
 
 **Visual workflow builder**
 - Drag-and-drop editor built on React Flow with seven node types: approval, condition, parallel split, merge gate, email, delay, and spawn (start another workflow when this one finishes).
-- Workflows are checked for cycles with a depth-first search before they can be published, so a broken route can't trap a document forever.
+- Workflows are validated before they can be published: loops (found with a depth-first search), dangling connections, approval steps with no approver, conditions with no value and parallel splits with a single branch are all reported back in the builder.
+- Saving as a draft skips validation, and a workflow can't be edited in a way that removes a step a live document is waiting on.
 - Approvers can be a specific person, a role, or a role within the submitter's department, with per-step permissions (approve, reject, attach) and checklists.
 - Workflows can require prerequisite workflows to be completed first.
 
@@ -24,7 +25,8 @@ In many universities, simple requests like a clearance form still mean walking b
 - Students can create public verification links (with expiry and use limits, and the option to revoke them) that let anyone confirm a document is genuine.
 
 **Operations**
-- SLA monitoring: a scheduled job sends reminders, then warnings, then escalates overdue documents.
+- Per-step deadlines: each approval step can set its own deadline, a reminder and a final warning. Once the deadline passes, the step is escalated once to a chosen person.
+- Delay steps pause a document for a set number of hours, and a background job resumes it.
 - Out-of-office delegation that follows chains of delegates and detects loops.
 - In-app and email notifications, version history when a document is resubmitted, and document tags with history.
 - Admin dashboard with statistics, a full audit log with CSV export, and bulk user import from CSV with email activation links.
@@ -96,7 +98,7 @@ npm install
 npm start                   # app on http://localhost:3000
 ```
 
-Email is optional for local use. Without SMTP settings, one-time codes and password-reset links are printed in the server console, so you can still test every flow.
+Email is optional for local use. Without SMTP settings, one-time codes are shown in the approval dialog and password-reset links are printed in the server console, so you can still test every flow.
 
 `npm run db:reset` drops and recreates the database if you want a clean start.
 
@@ -111,6 +113,18 @@ Email is optional for local use. Without SMTP settings, one-time codes and passw
 | Staff | `staff2@example.com` |
 | Student | `abebe@example.com` |
 
+## Testing
+
+```bash
+cd server
+npm test            # unit tests + integration tests (needs PostgreSQL)
+npm run test:unit   # unit tests only, no database needed
+```
+
+The integration tests start the real API against a separate `eflow_test` database (created and reset automatically) and drive whole documents through it: linear, conditional and parallel routes, role-based load balancing, delegation, delays, deadline escalation, spawned workflows, clearances, permissions, and tamper detection on the signature chain. The unit tests cover the graph walker, workflow validation and the signature chain on their own.
+
+GitHub Actions runs the full suite against PostgreSQL 16 and builds the client on every push and pull request.
+
 ## Project structure
 
 ```
@@ -120,8 +134,10 @@ client/                 React app
 server/
   src/index.js          Express app entry point
   src/routes/           REST endpoints (auth, documents, approvals, workflows, admin, users, notifications)
+  src/services/         Routing engine, workflow graph and validation, approval signing, notifications
   src/middleware/       JWT authentication and permission checks
-  src/cron/             SLA monitor
+  src/cron/             Background jobs: delay timers and deadline monitoring
+  test/                 Unit and integration tests
   db/schema.sql         Base schema
   db/migrations/        Incremental schema changes, applied in order
   db/setup.js           One-command database setup
@@ -133,10 +149,12 @@ docs/screenshots/       Images used in this README
 - **Modelling workflows as graphs.** Supporting conditions, parallel branches and merges meant treating each workflow as a directed graph. I had to detect cycles before publishing and track the state of each parallel branch on the document.
 - **Making approvals verifiable.** Storing "approved by X" in a table isn't proof. Chaining HMAC signatures means any edit to history can be detected, and the public verification page lets people outside the system check a document.
 - **Changing roles safely.** Deleting a role that live workflows depend on can strand documents. I added impact analysis and "sealing", which disables a role without breaking references to it.
+- **Keeping the engine testable.** The routing logic is split into a pure graph walker, which decides where a document goes next, and a thin database layer that applies the decision. That made it possible to unit-test every node type, and the integration tests found real bugs (parallel branches with several steps, delays that never paused, deadlines carried over to later steps) that clicking through the app had missed.
 - **Data integrity.** Multi-step updates such as approving, routing and notifying run inside database transactions, so a failure halfway through can't leave a document in an inconsistent state.
 
 ## Possible next steps
 
-- Automated tests for the routing engine and the signature chain
+- Moving one-time codes and background jobs to shared storage (such as Redis) so the API can run on more than one server
+- Rate limiting on login and code requests
 - Serving uploaded files through an authenticated endpoint
 - Deployment with Docker

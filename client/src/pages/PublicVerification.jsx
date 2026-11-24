@@ -48,6 +48,32 @@ const PublicVerification = () => {
     );
   }
 
+  // Only a fully approved document with an intact chain and unchanged file is "authentic"
+  const tampered = data.chain_valid === false || data.file_intact === false;
+  const verdict = tampered ? 'failed' : data.status === 'Approved' ? 'verified' : 'pending';
+  const VERDICTS = {
+    verified: {
+      box: 'bg-green-50 border-green-200', icon: 'bg-green-100 text-green-600', title: 'text-green-800', text: 'text-green-700',
+      heading: 'Verified Authentic',
+      body: 'This document completed every approval step. Its approval chain is intact and the file is exactly the one that was issued.',
+    },
+    pending: {
+      box: 'bg-amber-50 border-amber-200', icon: 'bg-amber-100 text-amber-600', title: 'text-amber-800', text: 'text-amber-700',
+      heading: data.status === 'Rejected' ? 'Not Approved' : 'Approval In Progress',
+      body: data.status === 'Rejected'
+        ? 'This document was rejected during review and has not been issued.'
+        : 'This document is genuine but has not completed all approval steps yet.',
+    },
+    failed: {
+      box: 'bg-red-50 border-red-200', icon: 'bg-red-100 text-red-600', title: 'text-red-800', text: 'text-red-700',
+      heading: 'Verification Failed',
+      body: data.chain_valid === false
+        ? 'The approval records for this document do not match their signatures. They may have been altered.'
+        : 'The stored file no longer matches the one that was approved.',
+    },
+  };
+  const v = VERDICTS[verdict];
+
   return (
     <div className="min-h-screen bg-gray-100 py-12 px-4 sm:px-6 lg:px-8 font-sans">
       <div className="max-w-3xl mx-auto">
@@ -60,7 +86,13 @@ const PublicVerification = () => {
             </div>
             <div className="relative z-10 flex flex-col items-center">
               <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mb-4 shadow-lg border-4 border-indigo-700">
-                <svg className="w-10 h-10 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                {verdict === 'verified' ? (
+                  <svg className="w-10 h-10 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                ) : verdict === 'pending' ? (
+                  <svg className="w-10 h-10 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                ) : (
+                  <svg className="w-10 h-10 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+                )}
               </div>
               <h1 className="text-3xl font-extrabold text-white tracking-tight uppercase">Certificate of Authenticity</h1>
               <p className="text-indigo-200 mt-2 font-medium">Official E-flow Verification Record</p>
@@ -68,15 +100,13 @@ const PublicVerification = () => {
           </div>
 
           <div className="p-8">
-            <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-8 flex items-start gap-4">
-              <div className="p-2 bg-green-100 rounded-full text-green-600 mt-1">
+            <div className={`${v.box} border rounded-lg p-4 mb-8 flex items-start gap-4`}>
+              <div className={`p-2 ${v.icon} rounded-full mt-1`}>
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
               </div>
               <div>
-                <h3 className="text-lg font-bold text-green-800">Verified Authentic</h3>
-                <p className="text-sm text-green-700 mt-1">
-                  This document has been successfully verified against the E-flow cryptographic ledger. The approval chain is intact and no tampering has been detected.
-                </p>
+                <h3 className={`text-lg font-bold ${v.title}`}>{v.heading}</h3>
+                <p className={`text-sm mt-1 ${v.text}`}>{v.body}</p>
               </div>
             </div>
 
@@ -118,7 +148,7 @@ const PublicVerification = () => {
                       <div>
                         <p className="text-sm font-bold text-gray-900">{app.role}</p>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-xs text-green-600 font-bold uppercase tracking-wider">{app.status}</span>
+                          <span className={`text-xs font-bold uppercase tracking-wider ${app.status === 'Approved' ? 'text-green-600' : app.status === 'Rejected' ? 'text-red-600' : 'text-amber-600'}`}>{app.status}</span>
                           <span className="text-gray-300">•</span>
                           <span className="text-xs text-gray-500 font-mono">{new Date(app.timestamp).toLocaleString()}</span>
                         </div>

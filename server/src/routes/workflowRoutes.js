@@ -1,73 +1,26 @@
 const express = require('express');
 const router = express.Router();
-const { Pool } = require('pg');
+const { parseFlow, validateFlow } = require('../services/workflowGraph');
 const authenticateToken = require('../middleware/authMiddleware');
 const { requireWorkflowManager } = require('../middleware/permissions');
 
-const pool = new Pool({
-    user: process.env.DB_USER,
-    host: process.env.DB_HOST,
-    database: process.env.DB_NAME,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
-});
+const pool = require('../db');
 
-// Helper for circular path validation
-const hasCycle = (flow_structure) => {
-    let flowData;
-    try {
-        flowData = typeof flow_structure === 'string' ? JSON.parse(flow_structure) : flow_structure;
-    } catch(e) { return false; }
-    
-    // Only validate if published
-    if (flowData.metadata && flowData.metadata.isPublished === false) {
-        return false; 
-    }
-
-    const nodes = flowData.nodes || [];
-    const edges = flowData.edges || [];
-
-    const adj = {};
-    nodes.forEach(n => { adj[n.id] = []; });
-    edges.forEach(e => {
-        if (adj[e.source]) adj[e.source].push(e.target);
-    });
-
-    const visited = {};
-    const recStack = {};
-
-    const dfs = (nodeId) => {
-        if (!visited[nodeId]) {
-            visited[nodeId] = true;
-            recStack[nodeId] = true;
-
-            const neighbors = adj[nodeId] || [];
-            for (let i = 0; i < neighbors.length; i++) {
-                const nextNode = neighbors[i];
-                if (!visited[nextNode] && dfs(nextNode)) return true;
-                else if (recStack[nextNode]) return true;
-            }
-        }
-        recStack[nodeId] = false;
-        return false;
-    };
-
-    for (let i = 0; i < nodes.length; i++) {
-        if (!visited[nodes[i].id]) {
-            if (dfs(nodes[i].id)) return true;
-        }
-    }
-    return false;
+// Published workflows must pass validation; drafts can be saved in any state.
+const publishProblems = (flow_structure) => {
+    const flow = parseFlow(flow_structure);
+    if (flow.metadata?.isPublished === false) return [];
+    return validateFlow(flow);
 };
-
 
 // POST: Save a new workflow
 router.post('/', authenticateToken, requireWorkflowManager, async (req, res) => {
     const { name, flow_structure } = req.body;
     if (!name) return res.status(400).json({ message: 'Workflow name is required' });
 
-    if (hasCycle(flow_structure)) {
-        return res.status(400).json({ message: 'Cannot publish workflow: Contains circular paths (deadlocks / infinite loops).' });
+    const problems = publishProblems(flow_structure);
+    if (problems.length > 0) {
+        return res.status(400).json({ message: `Cannot publish workflow: ${problems[0]}`, problems });
     }
 
     let client;
@@ -120,14 +73,37 @@ router.put('/:id', authenticateToken, requireWorkflowManager, async (req, res) =
 
     if (!name) return res.status(400).json({ message: 'Workflow name is required' });
 
-    if (hasCycle(flow_structure)) {
-        return res.status(400).json({ message: 'Cannot publish workflow: Contains circular paths (deadlocks / infinite loops).' });
+    const problems = publishProblems(flow_structure);
+    if (problems.length > 0) {
+        return res.status(400).json({ message: `Cannot publish workflow: ${problems[0]}`, problems });
     }
 
     let client;
     try {
         client = await pool.connect();
         await client.query('BEGIN');
+
+        // Documents already in progress must still be able to find the step they're waiting at
+        const newFlow = parseFlow(flow_structure);
+        const nodeIds = new Set(newFlow.nodes.map((n) => n.id));
+        const inFlight = await client.query(
+            "SELECT id, title, current_node_id, parallel_branch_data FROM documents WHERE workflow_id = $1 AND status = 'Pending'",
+            [workflowId]
+        );
+        const stranded = inFlight.rows.filter((d) => {
+            const waitingAt = Array.isArray(d.parallel_branch_data)
+                ? d.parallel_branch_data.filter((b) => b.status === 'Pending').map((b) => b.nodeId)
+                : [d.current_node_id];
+            return waitingAt.some((id) => id && !nodeIds.has(id));
+        });
+        if (stranded.length > 0) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                message: `Cannot save: ${stranded.length} document(s) in progress are waiting at a step you removed. Restore the step, or wait until they move on.`,
+                problems: stranded.map((d) => `"${d.title}" is waiting at a removed step.`),
+            });
+        }
+
         await client.query('UPDATE workflows SET name = $1, flow_structure = $2 WHERE id = $3', [name, flow_structure, workflowId]);
         await client.query("INSERT INTO audit_logs (user_id, action) VALUES ($1, $2)", [req.user.id, `Updated workflow: '${name}'`]);
         await client.query('COMMIT');

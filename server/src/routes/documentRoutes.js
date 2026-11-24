@@ -1,67 +1,18 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { Pool } = require('pg');
 const authenticateToken = require('../middleware/authMiddleware');
 const { requireDocumentAccess } = require('../middleware/permissions');
+const engine = require('../services/workflowEngine');
+const { parseFlow } = require('../services/workflowGraph');
+const { hashFile, verifyChain } = require('../services/signing');
 const Tesseract = require('tesseract.js');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const pdfParse = require('pdf-parse');
-const nodemailer = require('nodemailer');
 
-const pool = new Pool({
-    user: process.env.DB_USER, host: process.env.DB_HOST, database: process.env.DB_NAME, password: process.env.DB_PASSWORD, port: process.env.DB_PORT,
-});
-
-// Mailer Configuration
-const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT),
-    secure: process.env.SMTP_PORT == 465,
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    tls: { ciphers: 'SSLv3' }
-});
-
-const sendNotificationEmail = async (userId, subject, message) => {
-    try {
-        const userQuery = await pool.query('SELECT email, name, email_notifications FROM users WHERE id = $1', [userId]);
-        if (userQuery.rows.length > 0) {
-            const { email, name, email_notifications } = userQuery.rows[0];
-            if (email_notifications === false) return;
-
-            await transporter.sendMail({
-                from: `"E-flow System" <${process.env.FROM_EMAIL}>`,
-                to: email,
-                subject: subject,
-                html: `
-                    <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eaeaea; border-radius: 8px; max-width: 500px;">
-                        <h2 style="color: #4f46e5;">E-flow Notification</h2>
-                        <p>Hello ${name},</p>
-                        <p style="font-size: 16px; color: #374151;">${message}</p>
-                        <hr style="border: none; border-top: 1px solid #eaeaea; margin: 20px 0;" />
-                        <p style="font-size: 12px; color: #9ca3af;">Please log in to your dashboard to view the details.</p>
-                    </div>
-                `
-            });
-        }
-    } catch (err) {
-        console.error('Email failed:', err.message);
-    }
-};
-
-const insertNotification = async (userId, title, body, type = 'info', documentId = null) => {
-    if (!userId) return;
-    try {
-        await pool.query(
-            'INSERT INTO notifications (user_id, title, body, type, document_id) VALUES ($1, $2, $3, $4, $5)',
-            [userId, title, body, type, documentId]
-        );
-    } catch (err) {
-        console.error('Failed to insert notification:', err.message);
-    }
-};
+const pool = require('../db');
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'uploads/'),
@@ -109,29 +60,22 @@ const extractText = async (filePath, mimetype) => {
     }
 };
 
-// ====================================================
-// NEW: The Smart Delegation Resolver
-// Automatically reroutes documents if the assignee is OOO
-// ====================================================
-const resolveAssignee = async (dbPool, initialId) => {
-    if (!initialId) return null;
-    let currentId = initialId;
-    let visited = new Set(); // Prevents infinite loops if User A delegates to B, and B delegates to A!
-
-    while (currentId && !visited.has(currentId)) {
-        visited.add(currentId);
-        const res = await dbPool.query('SELECT is_out_of_office, delegate_id FROM users WHERE id = $1', [currentId]);
-        if (res.rows.length === 0) break;
-
-        const { is_out_of_office, delegate_id } = res.rows[0];
-        if (is_out_of_office && delegate_id) {
-            console.log(`\n🔄 DELEGATION TRIGGERED: User ${currentId} is OOO. Forwarding to Delegate ${delegate_id}`);
-            currentId = delegate_id;
-        } else {
-            break; // User is active, or no delegate assigned. Stop searching.
-        }
+// Check that the user may start this workflow: it must be published, open to their role,
+// and any prerequisite workflows must already be approved for them. Returns an error message or null.
+const checkCanSubmit = async (db, flow, user) => {
+    if (flow.metadata?.isPublished === false) return 'This workflow is not published yet.';
+    const allowed = flow.metadata?.allowedSubmitters || [];
+    if (allowed.length > 0 && user.role_id !== 3 && !allowed.map(Number).includes(Number(user.role_id))) {
+        return 'This service is not available for your role.';
     }
-    return currentId;
+    for (const pid of flow.metadata?.prerequisiteWorkflowIds || []) {
+        const done = await db.query(
+            'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
+            [pid, user.id, 'Approved']
+        );
+        if (done.rows.length === 0) return 'You must complete all prerequisite workflows before submitting this request.';
+    }
+    return null;
 };
 
 // 1. POST: Upload document
@@ -139,279 +83,109 @@ router.post('/upload', authenticateToken, (req, res, next) => upload.single('doc
     if (err) return handleMulterError(err, req, res, next);
     next();
 }), async (req, res) => {
+    const { title, workflow_id, metadata_tag } = req.body;
+    if (!title || !req.file) return res.status(400).json({ message: 'Title and document are required.' });
+
+    let client;
     try {
-        const { title, workflow_id, metadata_tag } = req.body;
-        const submitter_id = req.user.id;
-
-        if (!title || !req.file) return res.status(400).json({ message: 'Title and document are required.' });
-
-        let initialNodeId = null;
-        let initialAssigneeId = null;
-        let initialRoleId = null;
-        let initialDepartmentId = null;
-        // Pitfall 3 FIX: originalSlaDeadline is set once at upload time and NEVER changed again.
-        let originalSlaDeadline = null;
-        let uploadedFlowData = null;
-
+        let flow = parseFlow(null);
         if (workflow_id) {
-            const wfQuery = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [workflow_id]);
-            if (wfQuery.rows.length > 0) {
-                const flowData = typeof wfQuery.rows[0].flow_structure === 'string' ? JSON.parse(wfQuery.rows[0].flow_structure) : wfQuery.rows[0].flow_structure;
-                uploadedFlowData = flowData;
-                const nodes = flowData.nodes || [];
-                const edges = flowData.edges || [];
-
-                // Prerequisite Workflow Check
-                const prereqWfIds = flowData.metadata?.prerequisiteWorkflowIds;
-                if (prereqWfIds && prereqWfIds.length > 0) {
-                    for (const pid of prereqWfIds) {
-                        const prereqCheck = await pool.query(
-                            'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
-                            [pid, submitter_id, 'Approved']
-                        );
-                        if (prereqCheck.rows.length === 0) {
-                            return res.status(400).json({ message: 'You must complete all prerequisite workflows before submitting this request.' });
-                        }
-                    }
-                }
-
-                const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
-                if (startNode) {
-                    initialNodeId = startNode.id;
-
-                    if (startNode.data?.assignmentStrategy === 'role_based') {
-                        let targetRoleId = startNode.data.roleId ? parseInt(startNode.data.roleId, 10) : null;
-                        let targetDeptId = null;
-                        if (startNode.data.routingType === 'SPECIFIC') {
-                            targetDeptId = startNode.data.targetDepartmentId ? parseInt(startNode.data.targetDepartmentId, 10) : null;
-                        } else if (startNode.data.routingType === 'INITIATOR_DEPT') {
-                            const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [submitter_id]);
-                            targetDeptId = submitterDeptQuery.rows[0]?.department_id || null;
-                        }
-
-                        // Option A: Load Balancing - Assign to the user with the fewest pending tasks
-                        let lbQuery = `
-                            SELECT u.id, COUNT(d.id) as pending_count 
-                            FROM users u
-                            LEFT JOIN documents d ON d.current_assignee_id = u.id AND d.status = 'Pending'
-                            WHERE u.role_id = $1 AND u.is_active = true
-                        `;
-                        const lbParams = [targetRoleId];
-                        if (targetDeptId) {
-                            lbQuery += ` AND u.department_id = $2`;
-                            lbParams.push(targetDeptId);
-                        }
-                        lbQuery += ` GROUP BY u.id ORDER BY pending_count ASC LIMIT 1`;
-                        
-                        const lbResult = await pool.query(lbQuery, lbParams);
-                        if (lbResult.rows.length > 0) {
-                            initialAssigneeId = lbResult.rows[0].id;
-                            initialRoleId = null; // Cleared because it is now directly assigned
-                            initialDepartmentId = null;
-                        } else {
-                            // Fallback if no users exist: keep it role-based (it will be stuck until someone is hired)
-                            initialRoleId = targetRoleId;
-                            initialDepartmentId = targetDeptId;
-                        }
-                    } else {
-                        let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
-                        // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
-                        initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
-                    }
-
-                    // Pitfall 3: Stamp the original SLA deadline from the first node's slaHours
-                    const slaHours = startNode.data?.slaHours ? parseFloat(startNode.data.slaHours) : null;
-                    if (slaHours) {
-                        originalSlaDeadline = new Date(Date.now() + slaHours * 60 * 60 * 1000).toISOString();
-                    }
-                }
-            }
+            const wf = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [workflow_id]);
+            if (wf.rows.length === 0) return res.status(404).json({ message: 'Workflow not found.' });
+            flow = parseFlow(wf.rows[0].flow_structure);
+            const problem = await checkCanSubmit(pool, flow, req.user);
+            if (problem) return res.status(400).json({ message: problem });
         }
 
         const extracted_text = await extractText(req.file.path, req.file.mimetype);
 
-        const newDoc = await pool.query(
-            `INSERT INTO documents (title, file_path, extracted_text, submitter_id, workflow_id, current_node_id, current_assignee_id, current_role_id, current_department_id, metadata_tag, status, original_sla_deadline) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'Pending', $11) RETURNING *`,
-            [title, req.file.path, extracted_text, submitter_id, workflow_id || null, initialNodeId, initialAssigneeId, initialRoleId, initialDepartmentId, metadata_tag || null, originalSlaDeadline]
+        client = await pool.connect();
+        await client.query('BEGIN');
+        const inserted = await client.query(
+            `INSERT INTO documents (title, file_path, extracted_text, submitter_id, workflow_id, metadata_tag, status)
+             VALUES ($1, $2, $3, $4, $5, $6, 'Pending') RETURNING *`,
+            [title, req.file.path, extracted_text, req.user.id, workflow_id || null, metadata_tag || null]
         );
+        const doc = inserted.rows[0];
 
-        if (uploadedFlowData?.metadata?.clearanceWorkflowIds) {
-            for (const cId of uploadedFlowData.metadata.clearanceWorkflowIds) {
-                await pool.query('INSERT INTO document_prerequisites (parent_document_id, required_workflow_id) VALUES ($1, $2)', [newDoc.rows[0].id, cId]);
+        if (workflow_id) {
+            // Clearances: start each required sub-workflow now; this document can't be
+            // fully approved until they are.
+            for (const cId of flow.metadata?.clearanceWorkflowIds || []) {
+                await client.query('INSERT INTO document_prerequisites (parent_document_id, required_workflow_id) VALUES ($1, $2)', [doc.id, cId]);
+                await engine.spawnWorkflow(client, cId, doc);
             }
+            await engine.startDocument(client, doc, flow);
         }
+        await client.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Document Submitted')", [doc.id, req.user.id]);
+        await client.query('COMMIT');
 
-        if (initialAssigneeId) {
-            await sendNotificationEmail(
-                initialAssigneeId,
-                'New Document Ready for Review',
-                `A new document <b>"${title}"</b> has been routed to your queue.`
-            );
-            await insertNotification(
-                initialAssigneeId,
-                'New Task Assigned',
-                `You have been assigned to review: ${title}`,
-                'info',
-                newDoc.rows[0].id
-            );
-        }
-
-        res.status(201).json({ message: 'Document submitted', document: newDoc.rows[0] });
+        const saved = await pool.query('SELECT * FROM documents WHERE id = $1', [doc.id]);
+        res.status(201).json({ message: 'Document submitted', document: saved.rows[0] });
     } catch (err) {
+        if (client) await client.query('ROLLBACK');
         console.error(err);
         res.status(500).json({ message: 'Error uploading' });
+    } finally {
+        if (client) client.release();
     }
 });
 
 // 2. PUT: Resubmit a rejected document
-router.put('/resubmit/:id', authenticateToken, upload.single('document'), async (req, res) => {
+router.put('/resubmit/:id', authenticateToken, (req, res, next) => upload.single('document')(req, res, (err) => {
+    if (err) return handleMulterError(err, req, res, next);
+    next();
+}), async (req, res) => {
+    const documentId = req.params.id;
+    if (!req.file) return res.status(400).json({ message: 'New document file is required.' });
+
+    let client;
     try {
-        const documentId = req.params.id;
-        if (!req.file) return res.status(400).json({ message: 'New document file is required.' });
+        const existing = await pool.query(
+            'SELECT * FROM documents WHERE id = $1 AND submitter_id = $2 AND status = $3',
+            [documentId, req.user.id, 'Rejected']
+        );
+        if (existing.rows.length === 0) return res.status(403).json({ message: 'Document not eligible for resubmission.' });
+        const current = existing.rows[0];
 
-        const docQuery = await pool.query('SELECT workflow_id FROM documents WHERE id = $1 AND submitter_id = $2 AND status = $3', [documentId, req.user.id, 'Rejected']);
-        if (docQuery.rows.length === 0) return res.status(403).json({ message: 'Document not eligible for resubmission.' });
-
-        const workflow_id = docQuery.rows[0].workflow_id;
-        let initialNodeId = null;
-        let initialAssigneeId = null;
-        let initialRoleId = null;
-        let initialDepartmentId = null;
-        let originalSlaDeadline = null;
-
-        if (workflow_id) {
-            const wfQuery = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [workflow_id]);
-            if (wfQuery.rows.length > 0) {
-                const flowData = typeof wfQuery.rows[0].flow_structure === 'string' ? JSON.parse(wfQuery.rows[0].flow_structure) : wfQuery.rows[0].flow_structure;
-                const nodes = flowData.nodes || [];
-                const edges = flowData.edges || [];
-
-                // Prerequisite Workflow Check
-                const prereqWfIds = flowData.metadata?.prerequisiteWorkflowIds;
-                if (prereqWfIds && prereqWfIds.length > 0) {
-                    for (const pid of prereqWfIds) {
-                        const prereqCheck = await pool.query(
-                            'SELECT id FROM documents WHERE workflow_id = $1 AND submitter_id = $2 AND status = $3 LIMIT 1',
-                            [pid, req.user.id, 'Approved']
-                        );
-                        if (prereqCheck.rows.length === 0) {
-                            return res.status(400).json({ message: 'You must complete all prerequisite workflows before resubmitting this request.' });
-                        }
-                    }
-                }
-
-                const startNode = nodes.find(node => !edges.some(edge => edge.target === node.id)) || nodes[0];
-                if (startNode) {
-                    initialNodeId = startNode.id;
-
-                    if (startNode.data?.assignmentStrategy === 'role_based') {
-                        let targetRoleId = startNode.data.roleId ? parseInt(startNode.data.roleId, 10) : null;
-                        let targetDeptId = null;
-                        if (startNode.data.routingType === 'SPECIFIC') {
-                            targetDeptId = startNode.data.targetDepartmentId ? parseInt(startNode.data.targetDepartmentId, 10) : null;
-                        } else if (startNode.data.routingType === 'INITIATOR_DEPT') {
-                            const submitterDeptQuery = await pool.query('SELECT department_id FROM users WHERE id = $1', [req.user.id]);
-                            targetDeptId = submitterDeptQuery.rows[0]?.department_id || null;
-                        }
-
-                        // Option A: Load Balancing - Assign to the user with the fewest pending tasks
-                        let lbQuery = `
-                            SELECT u.id, COUNT(d.id) as pending_count 
-                            FROM users u
-                            LEFT JOIN documents d ON d.current_assignee_id = u.id AND d.status = 'Pending'
-                            WHERE u.role_id = $1 AND u.is_active = true
-                        `;
-                        const lbParams = [targetRoleId];
-                        if (targetDeptId) {
-                            lbQuery += ` AND u.department_id = $2`;
-                            lbParams.push(targetDeptId);
-                        }
-                        lbQuery += ` GROUP BY u.id ORDER BY pending_count ASC LIMIT 1`;
-                        
-                        const lbResult = await pool.query(lbQuery, lbParams);
-                        if (lbResult.rows.length > 0) {
-                            initialAssigneeId = lbResult.rows[0].id;
-                            initialRoleId = null; 
-                            initialDepartmentId = null;
-                        } else {
-                            initialRoleId = targetRoleId;
-                            initialDepartmentId = targetDeptId;
-                        }
-                    } else {
-                        let rawAssigneeId = startNode.data?.assignee ? parseInt(startNode.data.assignee, 10) : null;
-                        // PASS THE ASSIGNEE THROUGH THE DELEGATION ENGINE!
-                        initialAssigneeId = await resolveAssignee(pool, rawAssigneeId);
-                    }
-
-                    // Pitfall 3: Reset original SLA deadline on resubmit (fresh document lifecycle)
-                    const slaHours = startNode.data?.slaHours ? parseFloat(startNode.data.slaHours) : null;
-                    if (slaHours) {
-                        originalSlaDeadline = new Date(Date.now() + slaHours * 60 * 60 * 1000).toISOString();
-                    }
-                }
-            }
+        let flow = parseFlow(null);
+        if (current.workflow_id) {
+            const wf = await pool.query('SELECT flow_structure FROM workflows WHERE id = $1', [current.workflow_id]);
+            flow = parseFlow(wf.rows[0]?.flow_structure);
         }
 
         const extracted_text = await extractText(req.file.path, req.file.mimetype);
 
-        // ── VERSION HISTORY: Save old snapshot before overwriting ──────────────
-        const currentDocQuery = await pool.query(
-            'SELECT file_path, extracted_text FROM documents WHERE id = $1',
-            [documentId]
-        );
-        const currentDoc = currentDocQuery.rows[0];
+        client = await pool.connect();
+        await client.query('BEGIN');
 
-        // Get version count to calculate next version number (the one we're archiving is the current version)
-        const versionCountQuery = await pool.query(
-            'SELECT COUNT(*) FROM document_versions WHERE document_id = $1',
-            [documentId]
-        );
-        const nextVersionNumber = parseInt(versionCountQuery.rows[0].count) + 1;
-
-        // Get the latest rejection reason for this document
-        const rejectionQuery = await pool.query(
+        // Archive the rejected version
+        const versionCount = await client.query('SELECT COUNT(*) FROM document_versions WHERE document_id = $1', [documentId]);
+        const rejection = await client.query(
             "SELECT comments FROM approvals WHERE document_id = $1 AND status = 'Rejected' ORDER BY id DESC LIMIT 1",
             [documentId]
         );
-        const rejectionReason = rejectionQuery.rows[0]?.comments || null;
-
-        await pool.query(
+        await client.query(
             'INSERT INTO document_versions (document_id, version_number, file_path, extracted_text, rejection_reason, submitted_by) VALUES ($1, $2, $3, $4, $5, $6)',
-            [documentId, nextVersionNumber, currentDoc.file_path, currentDoc.extracted_text, rejectionReason, req.user.id]
-        );
-        // ── END VERSION HISTORY ────────────────────────────────────────────────
-
-        await pool.query(
-            `UPDATE documents SET file_path = $1, extracted_text = $2, status = 'Pending',
-             current_node_id = $3, current_assignee_id = $4, current_role_id = $5, current_department_id = $6,
-             original_sla_deadline = $7, delegation_sla_deadline = NULL,
-             parallel_branch_data = NULL,
-             updated_at = CURRENT_TIMESTAMP WHERE id = $8`,
-            [req.file.path, extracted_text, initialNodeId, initialAssigneeId, initialRoleId, initialDepartmentId, originalSlaDeadline, documentId]
+            [documentId, parseInt(versionCount.rows[0].count, 10) + 1, current.file_path, current.extracted_text, rejection.rows[0]?.comments || null, req.user.id]
         );
 
-        await pool.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Document Resubmitted by User')", [documentId, req.user.id]);
+        await client.query(
+            "UPDATE documents SET file_path = $1, extracted_text = $2, status = 'Pending', final_file_hash = NULL WHERE id = $3",
+            [req.file.path, extracted_text, documentId]
+        );
+        const doc = { ...current, file_path: req.file.path, extracted_text, status: 'Pending' };
+        if (current.workflow_id) await engine.startDocument(client, doc, flow);
 
-        if (initialAssigneeId) {
-            await sendNotificationEmail(
-                initialAssigneeId,
-                'Resubmitted Document Ready for Review',
-                `A previously rejected document has been resubmitted and routed to your queue.`
-            );
-            await insertNotification(
-                initialAssigneeId,
-                'Task Resubmitted',
-                `A document has been resubmitted for your review.`,
-                'info',
-                documentId
-            );
-        }
-
+        await client.query("INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, 'Document Resubmitted by User')", [documentId, req.user.id]);
+        await client.query('COMMIT');
         res.status(200).json({ message: 'Document resubmitted successfully' });
     } catch (err) {
+        if (client) await client.query('ROLLBACK');
         console.error(err);
         res.status(500).json({ message: 'Server error during resubmission' });
+    } finally {
+        if (client) client.release();
     }
 });
 
@@ -519,6 +293,7 @@ router.get('/', authenticateToken, async (req, res) => {
                         )
                     ))
                    OR a.approver_id = $1
+                   OR d.submitter_id = $1
                 ORDER BY d.created_at DESC
             `;
             values = [req.user.id, req.user.role_id, req.user.department_id];
@@ -569,7 +344,7 @@ router.get('/verify-link/:token', async (req, res) => {
 
         // Fetch limited, non-PII data
         const docQuery = await pool.query(
-            'SELECT title, status, created_at, updated_at, file_path FROM documents WHERE id = $1',
+            'SELECT title, status, created_at, updated_at, file_path, final_file_hash FROM documents WHERE id = $1',
             [link.document_id]
         );
         if (docQuery.rows.length === 0) return res.status(404).json({ message: 'Document not found.' });
@@ -578,11 +353,11 @@ router.get('/verify-link/:token', async (req, res) => {
 
         // Fetch approval chain metadata (anonymized roles)
         const approvalsQuery = await pool.query(
-            `SELECT a.status, a.created_at, a.document_hash, dr.name as role_name 
-             FROM approvals a 
-             JOIN users u ON a.approver_id = u.id 
+            `SELECT a.*, COALESCE(dr.name, CASE u.role_id WHEN 1 THEN 'Student' WHEN 2 THEN 'Staff' WHEN 3 THEN 'Administrator' END) as role_name
+             FROM approvals a
+             JOIN users u ON a.approver_id = u.id
              LEFT JOIN dynamic_roles dr ON u.role_id = dr.id
-             WHERE a.document_id = $1 ORDER BY a.created_at ASC`,
+             WHERE a.document_id = $1 ORDER BY a.id ASC`,
             [link.document_id]
         );
 
@@ -593,6 +368,8 @@ router.get('/verify-link/:token', async (req, res) => {
         } catch (e) {
             console.error('File read error:', e);
         }
+
+        const verification = verifyChain(approvalsQuery.rows, { currentFileHash: currentHash, finalFileHash: doc.final_file_hash });
 
         res.status(200).json({
             title: doc.title,
@@ -606,6 +383,8 @@ router.get('/verify-link/:token', async (req, res) => {
                 timestamp: a.created_at
             })),
             document_hash: currentHash,
+            chain_valid: verification.chainValid,
+            file_intact: verification.fileIntact,
             purpose: link.purpose
         });
     } catch (err) {
@@ -769,58 +548,19 @@ router.get('/:id/attachments', authenticateToken, requireDocumentAccess, async (
 // GET: Verify the full approval chain for a document
 router.get('/:id/verify-chain', authenticateToken, requireDocumentAccess, async (req, res) => {
     try {
-        const approvals = await pool.query(
-            'SELECT * FROM approvals WHERE document_id = $1 ORDER BY id ASC',
-            [req.params.id]
-        );
-
-        const doc = await pool.query('SELECT file_path FROM documents WHERE id = $1', [req.params.id]);
+        const doc = await pool.query('SELECT file_path, final_file_hash FROM documents WHERE id = $1', [req.params.id]);
         if (!doc.rows[0]) return res.status(404).json({ message: 'Document not found' });
-        
-        let currentHash = null;
-        try {
-            currentHash = crypto.createHash('sha256')
-                .update(fs.readFileSync(doc.rows[0].file_path))
-                .digest('hex');
-        } catch (e) {
-            console.error('File read error for hash:', e);
-        }
+        const approvals = await pool.query('SELECT * FROM approvals WHERE document_id = $1 ORDER BY id ASC', [req.params.id]);
 
-        const chain = [];
-        let chainValid = true;
+        let currentFileHash = null;
+        try { currentFileHash = hashFile(doc.rows[0].file_path); } catch (e) { console.error('File read error for hash:', e.message); }
 
-        for (let i = 0; i < approvals.rows.length; i++) {
-            const a = approvals.rows[i];
-
-            // Verify HMAC signature
-            const dataToSign = `${a.document_hash}|${a.approver_id}|${a.created_at.toISOString()}`;
-            const expectedSig = crypto.createHmac('sha256', process.env.APPROVAL_SIGNING_SECRET)
-                .update(dataToSign).digest('hex');
-
-            const sigValid = a.approval_signature === expectedSig;
-            const hashConsistent = i === 0 || a.document_hash === approvals.rows[i - 1].document_hash;
-            // The document hash may have changed if the final step stamps it, 
-            // so we only strictly check if it's unchanged if we are doing something specific,
-            // but the plan says check `a.document_hash === currentHash`
-            const documentUnchanged = a.document_hash === currentHash;
-
-            if (!sigValid || !hashConsistent) chainValid = false;
-
-            chain.push({
-                order: i + 1,
-                approver_id: a.approver_id,
-                status: a.status,
-                timestamp: a.created_at,
-                signature_valid: sigValid,
-                hash_consistent: hashConsistent,
-                document_unchanged: documentUnchanged
-            });
-        }
-
+        const result = verifyChain(approvals.rows, { currentFileHash, finalFileHash: doc.rows[0].final_file_hash });
         res.status(200).json({
             document_id: req.params.id,
-            chain_valid: chainValid,
-            approvals: chain
+            chain_valid: result.chainValid,
+            file_intact: result.fileIntact,
+            approvals: result.approvals,
         });
     } catch (err) {
         console.error('Error verifying chain:', err);

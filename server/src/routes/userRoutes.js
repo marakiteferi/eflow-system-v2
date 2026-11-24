@@ -1,11 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { Pool } = require('pg');
 const authenticateToken = require('../middleware/authMiddleware');
 
-const pool = new Pool({
-    user: process.env.DB_USER, host: process.env.DB_HOST, database: process.env.DB_NAME, password: process.env.DB_PASSWORD, port: process.env.DB_PORT,
-});
+const pool = require('../db');
 
 // GET: Current OOO settings
 router.get('/ooo', authenticateToken, async (req, res) => {

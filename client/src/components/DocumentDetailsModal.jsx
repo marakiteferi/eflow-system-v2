@@ -2,6 +2,102 @@ import React, { useState, useEffect, useRef, useContext } from 'react';
 import api, { SERVER_URL } from '../api';
 import { AuthContext } from '../context/AuthContext';
 
+// ── Progress tracker ─────────────────────────────────────────────────────────
+// Predicts the steps a document will pass through, mirroring the server's routing
+// rules (server/src/services/workflowGraph.js). Untagged documents are shown on the
+// TRUE path of a condition until a reviewer tags them.
+const PASS_THROUGH = ['join', 'email', 'spawn', 'delay'];
+
+const conditionMatches = (node, tag) => {
+  const values = String(node.data?.conditionValue || '').split(',').map(v => v.toLowerCase().trim()).filter(Boolean);
+  return values.includes(String(tag || '').toLowerCase().trim());
+};
+
+const buildProgressSteps = (flowStructure, docTag) => {
+  let flow = flowStructure;
+  if (!flow) return [];
+  if (typeof flow === 'string') {
+    try { flow = JSON.parse(flow); } catch (e) { return []; }
+  }
+  const nodes = flow.nodes || [];
+  const edges = flow.edges || [];
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const outgoing = new Map();
+  edges.forEach(e => { if (!outgoing.has(e.source)) outgoing.set(e.source, []); outgoing.get(e.source).push(e); });
+  const next = (id) => (outgoing.get(id) || [])[0]?.target || null;
+
+  // Skip steps nobody acts on (emails, timers, merge gates outside a branch)
+  const skip = (id, visited) => {
+    let cur = id;
+    while (cur && byId.has(cur) && PASS_THROUGH.includes(byId.get(cur).type) && !visited.has(cur)) {
+      visited.add(cur);
+      cur = next(cur);
+    }
+    return cur;
+  };
+
+  // Inside a parallel branch: find its first approval step, and the merge gate it leads to
+  const walkBranch = (startId) => {
+    let cur = startId;
+    let firstTask = null;
+    const seen = new Set();
+    while (cur && byId.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      const n = byId.get(cur);
+      if (n.type === 'join') return { firstTask, joinId: cur };
+      if (n.type === 'task' && !firstTask) firstTask = n;
+      cur = next(cur);
+    }
+    return { firstTask, joinId: null };
+  };
+
+  const startNode = nodes.find(n => !edges.some(e => e.target === n.id)) || nodes[0];
+  if (!startNode) return [];
+
+  const path = [];
+  const visited = new Set();
+  let currentId = skip(startNode.id, visited);
+
+  while (currentId && byId.has(currentId) && !visited.has(currentId)) {
+    visited.add(currentId);
+    const node = byId.get(currentId);
+
+    if (node.type === 'parallel') {
+      const branches = (outgoing.get(node.id) || []).map(e => walkBranch(e.target));
+      const tasks = branches.map(b => b.firstTask).filter(Boolean);
+      if (tasks.length > 0) {
+        path.push({
+          type: 'parallel_group',
+          id: node.id,
+          nodes: tasks,
+          label: 'Parallel Review',
+          subLabels: tasks.map(t => t.data?.label || 'Approval'),
+          totalNeeded: tasks.length,
+        });
+        tasks.forEach(t => visited.add(t.id));
+      }
+      const joinId = branches.find(b => b.joinId)?.joinId;
+      currentId = joinId ? skip(next(joinId), visited) : null;
+      continue;
+    }
+
+    if (node.type === 'condition') {
+      path.push({ type: 'condition_note', id: node.id, label: `Decision: ${node.data?.label || 'Condition Check'}` });
+      const handle = !docTag || conditionMatches(node, docTag) ? 'true' : 'false';
+      const edge = (outgoing.get(node.id) || []).find(e => e.sourceHandle === handle);
+      currentId = edge ? skip(edge.target, visited) : null;
+      continue;
+    }
+
+    if (node.type === 'task') {
+      path.push({ type: 'task', id: node.id, label: node.data?.label || 'Approval Task' });
+    }
+    currentId = skip(next(currentId), visited);
+  }
+
+  return path;
+};
+
 const DocumentDetailsModal = ({ document, onClose }) => {
   const { user } = useContext(AuthContext);
   const [history, setHistory] = useState([]);
@@ -100,113 +196,10 @@ const DocumentDetailsModal = ({ document, onClose }) => {
   }, [isImage]);
 
   // HOOK 4: Calculate Progress Tracker Steps
-  const progressSteps = React.useMemo(() => {
-    if (!workflow || !workflow.flow_structure) return [];
-    
-    let flowData = workflow.flow_structure;
-    if (typeof flowData === 'string') {
-      try { flowData = JSON.parse(flowData); } catch(e) { return []; }
-    }
-    
-    const nodes = flowData.nodes || [];
-    const edges = flowData.edges || [];
-    
-    let startNode = nodes.find(n => !edges.some(e => e.target === n.id)) || nodes[0];
-    if (!startNode) return [];
-
-    let currentId = startNode.id;
-    let path = [];
-    let visited = new Set();
-    
-    while (currentId && !visited.has(currentId)) {
-      visited.add(currentId);
-      const node = nodes.find(n => n.id === currentId);
-      if (!node) break;
-
-      if (node.type === 'parallel') {
-         const parallelOutgoing = edges.filter(e => e.source === node.id);
-         let branchTaskNodes = [];
-         let branchLabels = [];
-         for (const pe of parallelOutgoing) {
-            let bNode = nodes.find(n => n.id === pe.target);
-            while (bNode && !['task', 'join'].includes(bNode.type)) {
-               const nextEdge = edges.find(e => e.source === bNode.id);
-               if (nextEdge) bNode = nodes.find(n => n.id === nextEdge.target);
-               else { bNode = null; break; }
-            }
-            if (bNode && bNode.type === 'task') {
-                branchTaskNodes.push(bNode);
-                branchLabels.push(bNode.data?.label || 'Approval');
-            }
-         }
-         
-         if (branchTaskNodes.length > 0) {
-             path.push({
-                 type: 'parallel_group',
-                 id: node.id,
-                 nodes: branchTaskNodes,
-                 label: `Parallel Review`,
-                 subLabels: branchLabels,
-                 totalNeeded: branchTaskNodes.length
-             });
-             branchTaskNodes.forEach(t => visited.add(t.id));
-             
-             const firstTask = branchTaskNodes[0];
-             let outgoing = edges.filter(e => e.source === firstTask.id);
-             currentId = outgoing.length > 0 ? outgoing[0].target : null;
-             continue;
-         }
-      } else if (node.type === 'task') {
-         path.push({
-             type: 'task',
-             id: node.id,
-             label: node.data?.label || 'Approval Task'
-         });
-      } else if (node.type === 'condition') {
-          let docTag = (document.metadata_tag || '').toLowerCase().trim();
-          let condVal = (node.data?.conditionValue || '').toLowerCase().trim();
-          
-          path.push({
-              type: 'condition_note',
-              id: node.id,
-              label: `Decision: ${node.data?.label || 'Condition Check'}`
-          });
-          
-          let outgoingEdges = edges.filter(e => e.source === currentId);
-          let edge;
-          if (docTag) {
-              let expectedHandle = docTag === condVal ? 'true' : 'false';
-              edge = outgoingEdges.find(e => e.sourceHandle === expectedHandle) || outgoingEdges[0];
-          } else {
-              // Predict true branch if document hasn't been tagged yet
-              edge = outgoingEdges.find(e => e.sourceHandle === 'true') || outgoingEdges[0];
-          }
-          currentId = edge ? edge.target : null;
-          continue;
-      }
-      
-      let outgoingEdges = edges.filter(e => e.source === currentId);
-      if (outgoingEdges.length === 0) break;
-      
-      let nextId = outgoingEdges[0].target;
-      let nextNode = nodes.find(n => n.id === nextId);
-      
-      while(nextNode && ['join', 'email', 'spawn', 'delay', 'start'].includes(nextNode.type)) {
-          visited.add(nextNode.id);
-          let out = edges.filter(e => e.source === nextNode.id);
-          if (out.length > 0) {
-              nextId = out[0].target;
-              nextNode = nodes.find(n => n.id === nextId);
-          } else {
-              nextNode = null;
-              nextId = null;
-          }
-      }
-      currentId = nextId;
-    }
-    
-    return path;
-  }, [workflow, document]);
+  const progressSteps = React.useMemo(
+    () => buildProgressSteps(workflow?.flow_structure, document?.metadata_tag),
+    [workflow, document]
+  );
 
   const getStepStatus = (step) => {
       if (document.status === 'Approved') return 'completed';
@@ -889,34 +882,32 @@ const DocumentDetailsModal = ({ document, onClose }) => {
 
                   <div>
                     <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-3 border-b pb-2">Detailed Hash Chain</h4>
+                    {chainVerification.file_intact !== null && chainVerification.file_intact !== undefined && (
+                      <div className={`mb-3 flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-lg border ${chainVerification.file_intact ? 'bg-green-50 border-green-200 text-green-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}>
+                        {chainVerification.file_intact ? '✓ The file on record is exactly the one that was approved.' : '⚠ The file has changed since it was last approved (for example, it was resubmitted).'}
+                      </div>
+                    )}
                     <div className="space-y-3">
                       {chainVerification.approvals.map((app, idx) => (
                         <div key={idx} className="bg-white border border-gray-200 p-4 rounded-lg shadow-sm">
                           <div className="flex justify-between items-start mb-2">
-                            <span className="text-sm font-bold text-gray-800">Step {app.order} (Approver ID: {app.approver_id})</span>
+                            <span className="text-sm font-bold text-gray-800">Record {app.order} · {app.status} (user #{app.approver_id})</span>
                             <span className="text-xs text-gray-500">{new Date(app.timestamp).toLocaleString()}</span>
                           </div>
-                          
-                          <div className="grid grid-cols-2 gap-4 mt-3">
-                            <div className="flex items-center gap-2">
-                              {app.signature_valid ? <span className="text-green-500 font-bold">✓</span> : <span className="text-red-500 font-bold">✗</span>}
-                              <span className="text-xs text-gray-600">HMAC Signature</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              {app.hash_consistent ? <span className="text-green-500 font-bold">✓</span> : <span className="text-red-500 font-bold">✗</span>}
-                              <span className="text-xs text-gray-600">Chain Link Consistent</span>
-                            </div>
-                            {idx === chainVerification.approvals.length - 1 && (
-                              <div className="flex items-center gap-2 col-span-2">
-                                {app.document_unchanged ? <span className="text-green-500 font-bold">✓</span> : <span className="text-yellow-500 font-bold">⚠</span>}
-                                <span className="text-xs text-gray-600">
-                                  {app.document_unchanged 
-                                    ? 'Document matches initial hash' 
-                                    : 'Document has been stamped (expected post-approval)'}
-                                </span>
+                          {app.signed ? (
+                            <div className="grid grid-cols-2 gap-4 mt-3">
+                              <div className="flex items-center gap-2">
+                                {app.signature_valid ? <span className="text-green-500 font-bold">✓</span> : <span className="text-red-500 font-bold">✗</span>}
+                                <span className="text-xs text-gray-600">HMAC signature</span>
                               </div>
-                            )}
-                          </div>
+                              <div className="flex items-center gap-2">
+                                {app.link_valid ? <span className="text-green-500 font-bold">✓</span> : <span className="text-red-500 font-bold">✗</span>}
+                                <span className="text-xs text-gray-600">Linked to previous approval</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-500 mt-2">Not a signed approval (rejections and escalations are logged, not signed).</p>
+                          )}
                         </div>
                       ))}
                       {chainVerification.approvals.length === 0 && (
