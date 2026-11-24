@@ -231,6 +231,8 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
       .then(res => setRolePreviewUsers(res.data))
       .catch(() => setRolePreviewUsers([]))
       .finally(() => setRolePreviewLoading(false));
+    // Re-run only when the routing settings change, not on every edit to the node
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNode?.id, data.assignmentStrategy, data.roleId, data.routingType, data.targetDepartmentId]);
 
   if (!selectedNode) return null;
@@ -283,7 +285,7 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
   };
 
   return (
-    <div className="w-72 bg-white border-l border-gray-200 shadow-xl h-full flex flex-col fixed right-0 top-0 z-50 pt-16">
+    <div className="w-80 bg-white border-l border-gray-200 shadow-2xl h-full flex flex-col absolute right-0 top-0 z-20">
       <div className="flex justify-between items-center px-4 py-3 border-b bg-gray-50">
         <h3 className="font-bold text-gray-800 text-sm">Node Properties</h3>
         <button onClick={closePanel} className="text-gray-400 hover:text-gray-700 font-bold">&times;</button>
@@ -397,61 +399,28 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                   )}
 
             <div className="bg-red-50 p-3 rounded border border-red-100">
-              <label className="block text-[10px] uppercase tracking-wider font-bold text-red-800 mb-1 border-b border-red-200 pb-1">SLA Timers (Hours)</label>
-              <p className="text-[9px] text-red-500 mb-2">All values must be positive. Reminder &gt; Warning &gt; Breach (decreasing).</p>
+              <label className="block text-[10px] uppercase tracking-wider font-bold text-red-800 mb-1 border-b border-red-200 pb-1">Deadline &amp; Alerts (Hours)</label>
+              <p className="text-[10px] text-red-500 mb-2">Optional. The deadline starts when this step is assigned.</p>
               <div className="space-y-2">
-                <div className="flex justify-between items-center gap-2">
-                  <div>
-                    <span className="text-xs text-gray-700 font-medium">⏰ Reminder after</span>
-                    <p className="text-[9px] text-gray-400">First gentle nudge</p>
+                {[
+                  { field: 'escalationHours', label: '🚨 Deadline', hint: 'Escalate if not done within', strong: true },
+                  { field: 'reminderHours', label: '🔔 Reminder', hint: 'hrs before the deadline' },
+                  { field: 'warningHours', label: '⚠️ Final warning', hint: 'hrs before the deadline' },
+                ].map(({ field, label, hint, strong }) => (
+                  <div key={field} className="flex justify-between items-center gap-2">
+                    <div>
+                      <span className={`text-xs font-medium ${strong ? 'text-red-700 font-bold' : 'text-gray-700'}`}>{label}</span>
+                      <p className="text-[9px] text-gray-400">{hint}</p>
+                    </div>
+                    <input
+                      type="number" min="0" step="0.5"
+                      value={(field === 'escalationHours' ? (data.escalationHours || data.slaHours) : data[field]) || ''}
+                      onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange(field, v || ''); }}
+                      className={`w-20 text-xs p-1.5 border rounded text-center ${strong ? 'border-red-400 font-bold' : ''}`}
+                      placeholder="hrs"
+                    />
                   </div>
-                  <input
-                    type="number" min="0" step="0.5"
-                    value={data.slaHours || ''}
-                    onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange('slaHours', v || ''); }}
-                    className="w-20 text-xs p-1.5 border rounded text-center"
-                    placeholder="hrs"
-                  />
-                </div>
-                <div className="flex justify-between items-center gap-2">
-                  <div>
-                    <span className="text-xs text-amber-700 font-medium">🔔 Reminder alert at</span>
-                    <p className="text-[9px] text-gray-400">hrs remaining before breach</p>
-                  </div>
-                  <input
-                    type="number" min="0" step="0.5"
-                    value={data.reminderHours || ''}
-                    onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange('reminderHours', v || ''); }}
-                    className="w-20 text-xs p-1.5 border rounded text-center"
-                    placeholder="hrs"
-                  />
-                </div>
-                <div className="flex justify-between items-center gap-2">
-                  <div>
-                    <span className="text-xs text-orange-700 font-medium">⚠️ Warning alert at</span>
-                    <p className="text-[9px] text-gray-400">hrs remaining before breach</p>
-                  </div>
-                  <input
-                    type="number" min="0" step="0.5"
-                    value={data.warningHours || ''}
-                    onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange('warningHours', v || ''); }}
-                    className="w-20 text-xs p-1.5 border rounded text-center"
-                    placeholder="hrs"
-                  />
-                </div>
-                <div className="flex justify-between items-center gap-2 pt-1 border-t border-red-200">
-                  <div>
-                    <span className="text-xs font-bold text-red-700">🚨 Breach / Escalate after</span>
-                    <p className="text-[9px] text-gray-400">Reassigns to target at this point</p>
-                  </div>
-                  <input
-                    type="number" min="0" step="0.5"
-                    value={data.escalationHours || ''}
-                    onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange('escalationHours', v || ''); }}
-                    className="w-20 text-xs p-1.5 border border-red-400 rounded text-center font-bold"
-                    placeholder="hrs"
-                  />
-                </div>
+                ))}
                 {parseFloat(data.escalationHours) > 0 && (
                   <div className="pt-2 mt-1 border-t border-red-100">
                     <label className="block text-[10px] font-bold text-red-700 uppercase tracking-wider mb-1">Escalate To (Required)</label>
@@ -503,7 +472,7 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
               <label className="block text-[10px] uppercase font-bold text-gray-600 mb-2">
                 Allowed Actions at This Stage
               </label>
-              {['approve', 'reject', 'request_revision', 'attach_documents'].map(action => (
+              {['approve', 'reject', 'attach_documents'].map(action => (
                 <label key={action} className="flex items-center gap-2 py-1 cursor-pointer">
                   <input
                     type="checkbox"
@@ -746,7 +715,7 @@ const WorkflowBuilderInner = () => {
   };
 
   const reactFlowWrapper = useRef(null);
-  const { project } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
 
   const nodeTypes = useMemo(() => ({
     task: TaskNode,
@@ -839,22 +808,22 @@ const WorkflowBuilderInner = () => {
 
     if (typeof type === 'undefined' || !type) return;
 
-    const reactFlowBounds = reactFlowWrapper.current.getBoundingClientRect();
-    const position = project({
-      x: event.clientX - reactFlowBounds.left,
-      y: event.clientY - reactFlowBounds.top,
-    });
+    // Centre the node on the cursor (nodes are about 240 x 90 px)
+    const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const position = { x: point.x - 120, y: point.y - 45 };
 
     const newNode = {
       id: `${type}_${Date.now()}`,
       type,
       position,
+      selected: true,
       data: { label, staffList, rolesList, departments },
     };
 
-    setNodes((nds) => nds.concat(newNode));
-    setSelectedNodeId(newNode.id); // Auto-select on drop
-  }, [project, staffList, rolesList, departments]);
+    // Select the new node (and only it) so its settings panel opens straight away
+    setNodes((nds) => nds.map(n => ({ ...n, selected: false })).concat(newNode));
+    setSelectedNodeId(newNode.id);
+  }, [screenToFlowPosition, staffList, rolesList, departments]);
 
 
   // Load/Save
@@ -874,6 +843,8 @@ const WorkflowBuilderInner = () => {
         data: { ...node.data, staffList, rolesList, departments }
       }));
       setNodes(loadedNodes); setEdges(flowData.edges || []);
+      // Frame the loaded workflow once React Flow has measured the nodes
+      setTimeout(() => fitView({ padding: 0.2, maxZoom: 1, duration: 300 }), 50);
       setAllowedSubmitters(flowData.metadata?.allowedSubmitters || []);
       setPrerequisiteWorkflowIds(flowData.metadata?.prerequisiteWorkflowIds?.join(',') || '');
       setClearanceWorkflowIds(flowData.metadata?.clearanceWorkflowIds?.join(',') || '');
@@ -1016,7 +987,13 @@ const WorkflowBuilderInner = () => {
       setSavedWorkflows(wfRes.data);
       return true;
     } catch (err) {
-      showToast('error', 'Failed to save workflow. Please try again.');
+      const data = err.response?.data;
+      if (data?.problems?.length) {
+        // The server checks the workflow too; show exactly what needs fixing
+        showConfirm('⛔ Could not save workflow', data.problems, null, 'Understood', 'error');
+      } else {
+        showToast('error', data?.message || 'Failed to save workflow. Please try again.');
+      }
       return false;
     } finally {
       setIsValidating(false);
@@ -1121,11 +1098,6 @@ const WorkflowBuilderInner = () => {
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId);
 
-  const handleRoleToggle = (roleId) => {
-    setAllowedSubmitters(prev =>
-      prev.includes(roleId) ? prev.filter(r => r !== roleId) : [...prev, roleId]
-    );
-  };
 
   return (
     <div ref={builderContainerRef} className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-140px)] min-h-[700px] w-full">
@@ -1361,7 +1333,9 @@ const WorkflowBuilderInner = () => {
             onDragOver={onDragOver}
             snapToGrid={true}
             snapGrid={[15, 15]}
-            fitView
+            defaultViewport={{ x: 40, y: 40, zoom: 0.85 }}
+            minZoom={0.25}
+            maxZoom={1.5}
             deleteKeyCode={['Backspace', 'Delete']}
           >
             <Background color="#334155" gap={24} size={2} />

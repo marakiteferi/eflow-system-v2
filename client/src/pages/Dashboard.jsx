@@ -36,7 +36,7 @@ const Dashboard = () => {
   const [showAdminOtpModal, setShowAdminOtpModal] = useState(false);
   const [adminOtpInput, setAdminOtpInput] = useState('');
   const [adminOtpAction, setAdminOtpAction] = useState(null);
-  const [isAdminRequestingOtp, setIsAdminRequestingOtp] = useState(false);
+  const [, setIsAdminRequestingOtp] = useState(false);
   const [isAdminVerifyingOtp, setIsAdminVerifyingOtp] = useState(false);
 
   // NEW: Recent Items Expansion State
@@ -56,6 +56,7 @@ const Dashboard = () => {
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [otpInput, setOtpInput] = useState('');
+  const [otpHint, setOtpHint] = useState('');
   const [savedSignature, setSavedSignature] = useState('');
 
   const [showRejectModal, setShowRejectModal] = useState(false);
@@ -103,8 +104,8 @@ const Dashboard = () => {
         const docResponse = await api.get('/documents');
         setDocuments(docResponse.data);
       }
-      if (isStaffOrReviewer) {
-        // Staff need workflow data to read the checklists!
+      if (isStaffOrReviewer || isSuperAdmin || isCustomRole) {
+        // Anyone who can be assigned a step needs the checklists and their signature
         const wfResponse = await api.get('/workflows');
         setWorkflows(wfResponse.data);
         const profileRes = await api.get('/auth/profile');
@@ -133,7 +134,7 @@ const Dashboard = () => {
     } catch (error) {
       console.error("Failed to fetch data", error);
     }
-  }, [isStudent, isStaffOrReviewer, canManageUsers, canCreateWorkflows]);
+  }, [isStudent, isStaffOrReviewer, canManageUsers, canCreateWorkflows, isCustomRole, isSuperAdmin]);
 
   useEffect(() => {
     if (user) fetchData();
@@ -232,7 +233,9 @@ const Dashboard = () => {
   const proceedToOtp = async (docId) => {
     setIsRequestingOtp(true);
     try {
-      await api.post('/approvals/request-otp', { documentId: docId });
+      const res = await api.post('/approvals/request-otp', { documentId: docId });
+      // Without SMTP (local demo), the server returns the code in its message
+      setOtpHint(res.data?.message?.includes('dev mode') ? res.data.message : '');
       setShowChecklistModal(false);
       setShowOtpModal(true);
     } catch (err) {
@@ -474,7 +477,7 @@ const Dashboard = () => {
                   <tr key={doc.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4">
                       <p className="font-bold text-gray-900 cursor-pointer hover:text-blue-600" onClick={() => setViewingDocument(doc)}>{doc.title}</p>
-                      <p className="text-xs text-gray-500">{doc.submitter_id === user.id ? 'My Submission' : `Tag: ${doc.metadata_tag || 'None'}`}</p>
+                      <p className="text-xs text-gray-500">{doc.submitter_id === user.id ? 'My submission' : (doc.metadata_tag ? `Tag: ${doc.metadata_tag}` : 'Submitted document')}</p>
                     </td>
                     <td className="px-6 py-4">
                       {doc.status === 'Pending' && <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-orange-100 text-orange-800"><span className="w-1.5 h-1.5 rounded-full bg-orange-500 mr-1.5"></span>Pending Review</span>}
@@ -483,9 +486,16 @@ const Dashboard = () => {
                     </td>
                     <td className="px-6 py-4 text-gray-500">{new Date(doc.created_at).toLocaleDateString()}</td>
                     <td className="px-6 py-4 text-center">
-                      <button onClick={() => setViewingDocument(doc)} className="text-gray-400 hover:text-blue-600">
-                        <svg className="w-5 h-5 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                      </button>
+                      <div className="flex items-center justify-center gap-2">
+                        {doc.status === 'Rejected' && doc.submitter_id === user.id && (
+                          <button onClick={() => openResubmitModal(doc.id)} className="text-xs font-bold text-red-600 border border-red-200 hover:bg-red-600 hover:text-white px-2.5 py-1 rounded transition-colors">
+                            Fix & Resubmit
+                          </button>
+                        )}
+                        <button onClick={() => setViewingDocument(doc)} className="text-gray-400 hover:text-blue-600" title="View details">
+                          <svg className="w-5 h-5 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -531,58 +541,10 @@ const Dashboard = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-100 text-sm">
-                {filteredDocs.filter(d => {
-                    if (d.status !== 'Pending') return false;
-                    
-                    // Is it actually assigned to them?
-                    const isDirectAssignee = d.current_assignee_id === user?.id;
-                    const isRoleAssignee = !d.current_assignee_id && d.current_role_id === user?.role_id && (!d.current_department_id || d.current_department_id === user?.department_id);
-                    
-                    const branchData = d.parallel_branch_data;
-                    let isParallelAssignee = false;
-                    if (branchData && Array.isArray(branchData)) {
-                        // Already completed?
-                        if (branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
-                        isParallelAssignee = branchData.some(b => {
-                            if (b.status !== 'Pending') return false;
-                            if (b.assigneeId === user?.id) return true;
-                            if (b.roleId === user?.role_id && (!b.departmentId || b.departmentId === user?.department_id)) return true;
-                            return false;
-                        });
-                    } else if (branchData && branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) {
-                        return false;
-                    }
-
-                    if (!isDirectAssignee && !isRoleAssignee && !isParallelAssignee) return false;
-                    return true;
-                  }).length === 0 ? (
+                {filteredDocs.filter(isMyPendingTask).length === 0 ? (
                   <tr><td colSpan="5" className="px-6 py-12 text-center text-gray-500">No pending assignments.</td></tr>
                 ) : (
-                  filteredDocs.filter(d => {
-                    if (d.status !== 'Pending') return false;
-                    
-                    // Is it actually assigned to them?
-                    const isDirectAssignee = d.current_assignee_id === user?.id;
-                    const isRoleAssignee = !d.current_assignee_id && d.current_role_id === user?.role_id && (!d.current_department_id || d.current_department_id === user?.department_id);
-                    
-                    const branchData = d.parallel_branch_data;
-                    let isParallelAssignee = false;
-                    if (branchData && Array.isArray(branchData)) {
-                        // Already completed?
-                        if (branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) return false;
-                        isParallelAssignee = branchData.some(b => {
-                            if (b.status !== 'Pending') return false;
-                            if (b.assigneeId === user?.id) return true;
-                            if (b.roleId === user?.role_id && (!b.departmentId || b.departmentId === user?.department_id)) return true;
-                            return false;
-                        });
-                    } else if (branchData && branchData.completedBy && Array.isArray(branchData.completedBy) && branchData.completedBy.includes(user?.id)) {
-                        return false;
-                    }
-
-                    if (!isDirectAssignee && !isRoleAssignee && !isParallelAssignee) return false;
-                    return true;
-                  }).map((doc) => {
+                  filteredDocs.filter(isMyPendingTask).map((doc) => {
                     const allowedTags = getNodeAllowedTags(doc);
                     const allowedActions = getNodeAllowedActions(doc);
                     const currentTag = localTags[doc.id] ?? (doc.metadata_tag || '');
@@ -591,7 +553,9 @@ const Dashboard = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-medium">#TSK-{doc.id.toString().substring(0, 4)}</td>
                         <td className="px-6 py-4">
                           <p className="font-bold text-gray-900 cursor-pointer group-hover:text-blue-600" onClick={() => setViewingDocument(doc)}>{doc.title}</p>
-                          <p className="text-xs text-gray-500 mt-0.5">Assigned to your role</p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {Array.isArray(doc.parallel_branch_data) ? 'Parallel review: your branch' : doc.current_assignee_id === user?.id ? 'Assigned to you' : 'Assigned to your role'}
+                          </p>
 
                           {/* Tag Dropdown implementation embedded in flow */}
                           <div className="mt-2 flex items-center gap-2">
@@ -637,6 +601,20 @@ const Dashboard = () => {
         </div>
       </div>
     );
+  };
+
+  // A document is in my queue if it's pending and waiting on me: directly, through my role,
+  // or as one of the open branches of a parallel step.
+  const isMyPendingTask = (d) => {
+    if (d.status !== 'Pending' || d.resume_at) return false;
+    const matches = (assigneeId, roleId, departmentId) => {
+      if (assigneeId) return assigneeId === user?.id;
+      return roleId != null && roleId === user?.role_id && (!departmentId || departmentId === user?.department_id);
+    };
+    if (Array.isArray(d.parallel_branch_data)) {
+      return d.parallel_branch_data.some(b => b.status === 'Pending' && matches(b.assigneeId, b.roleId, b.departmentId));
+    }
+    return matches(d.current_assignee_id, d.current_role_id, d.current_department_id);
   };
 
   const renderServicesView = () => {
@@ -1191,10 +1169,13 @@ const Dashboard = () => {
       {/* SIDEBAR NAVIGATION */}
       <aside className="w-64 bg-white border-r border-gray-100 flex flex-col flex-shrink-0 sticky top-0 h-screen hidden md:flex">
         <div className="p-6 border-b border-gray-100 flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-blue-600 flex items-center justify-center text-white font-bold shadow-sm">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-sm">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
           </div>
-          <span className="font-bold text-gray-900 text-lg tracking-tight">E-Flow Portal</span>
+          <div>
+            <p className="font-bold text-gray-900 text-sm leading-none">E-Flow</p>
+            <p className="text-xs text-gray-500 mt-0.5">{isSuperAdmin ? 'Administration' : 'Staff Portal'}</p>
+          </div>
         </div>
 
         <div className="px-4 py-6 text-xs font-bold text-gray-400 uppercase tracking-widest">Menu</div>
@@ -1385,6 +1366,7 @@ const Dashboard = () => {
             <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-md">
               <h3 className="text-lg font-bold mb-2">Verify & Approve</h3>
               <p className="text-sm text-gray-600 mb-4">Enter the OTP sent to your email to confirm your approval.</p>
+              {otpHint && <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4">{otpHint}</p>}
               
               <input type="text" placeholder="Enter OTP from email" className="w-full px-3 py-2 border rounded-md mb-4" value={otpInput} onChange={(e) => setOtpInput(e.target.value)} />
 
