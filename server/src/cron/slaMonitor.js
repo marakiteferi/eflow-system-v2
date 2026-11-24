@@ -67,78 +67,129 @@ const resumeDelayedDocuments = async () => {
 };
 
 // ── 2. SLA alerts and escalation ─────────────────────────────────────────────
+/**
+ * Decide what one step needs right now. A "slot" is either the document's single
+ * current step or one pending parallel branch:
+ *   { nodeId, assigneeId, deadline, reminderSent, warningSent, escalated }
+ * Returns the actions to take; the caller stores the flags in the right place.
+ */
+const slaActionFor = (slot, node, now = Date.now()) => {
+    if (!slot.deadline || slot.escalated) return null;
+    if (isBreached(slot.deadline, now)) {
+        const target = node?.data?.escalationUserId ? parseInt(node.data.escalationUserId, 10) : null;
+        return { kind: 'escalate', target: target || null };
+    }
+    const warningHours = Math.abs(parseFloat(node?.data?.warningHours)) || null;
+    const reminderHours = Math.abs(parseFloat(node?.data?.reminderHours)) || null;
+    if (warningHours && !slot.warningSent && isWithinHours(slot.deadline, warningHours, now)) return { kind: 'warning' };
+    if (reminderHours && !slot.reminderSent && !slot.warningSent && isWithinHours(slot.deadline, reminderHours, now)) return { kind: 'reminder' };
+    return null;
+};
+
+/** Send the alert or perform the escalation for one slot. Returns the slot's new fields. */
+const applySlaAction = async (db, doc, slot, action) => {
+    if (action.kind === 'warning') {
+        await notifyUser(db, slot.assigneeId, {
+            title: `⚠️ SLA warning: "${doc.title}"`,
+            body: `"${doc.title}" is about to miss its review deadline. Immediate action is required.`,
+            type: 'danger',
+            documentId: doc.id,
+        });
+        return { warningSent: true, reminderSent: true };
+    }
+    if (action.kind === 'reminder') {
+        await notifyUser(db, slot.assigneeId, {
+            title: `⏰ Reminder: "${doc.title}"`,
+            body: `"${doc.title}" is approaching its review deadline.`,
+            type: 'warning',
+            documentId: doc.id,
+        });
+        return { reminderSent: true };
+    }
+
+    // Escalation happens once per step; the flag resets when the step changes
+    const missed = new Date(slot.deadline).toISOString();
+    if (!action.target) {
+        await db.query('INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)',
+            [doc.id, slot.assigneeId, 'SLA Breached — no escalation target configured for this step']);
+        console.warn(`⚠️ SLA breach: document ${doc.id} has no escalation target`);
+        return { escalated: true };
+    }
+    await db.query(
+        "INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Auto-Escalated', $4)",
+        [doc.id, slot.assigneeId, slot.nodeId, `Deadline missed (${missed}). Reassigned to the escalation target.`]
+    );
+    await db.query('INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)',
+        [doc.id, slot.assigneeId, 'SLA Breached — Reassigned to Escalation Target']);
+    await notifyUser(db, action.target, {
+        title: `🚨 Escalated to you: "${doc.title}"`,
+        body: `"${doc.title}" was escalated to you because its reviewer missed the deadline. Please act on it as soon as possible.`,
+        type: 'danger',
+        documentId: doc.id,
+    });
+    console.log(`🚨 SLA breach: document ${doc.id} escalated to user ${action.target}`);
+    return { escalated: true, assigneeId: action.target, roleId: null, departmentId: null };
+};
+
+const checkDocumentSla = async (db, doc, flow) => {
+    // Parallel review: every pending branch has its own deadline
+    if (Array.isArray(doc.parallel_branch_data)) {
+        let changed = false;
+        const branches = [];
+        for (const b of doc.parallel_branch_data) {
+            const action = b.status === 'Pending' ? slaActionFor(b, getNode(flow, b.nodeId)) : null;
+            if (!action) { branches.push(b); continue; }
+            branches.push({ ...b, ...(await applySlaAction(db, doc, b, action)) });
+            changed = true;
+        }
+        if (changed) {
+            await db.query('UPDATE documents SET parallel_branch_data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+                [JSON.stringify(branches), doc.id]);
+        }
+        return;
+    }
+
+    // A single current step. Only that step's own deadline counts: a step without one is never escalated.
+    const slot = {
+        nodeId: doc.current_node_id,
+        assigneeId: doc.current_assignee_id,
+        deadline: doc.delegation_sla_deadline,
+        reminderSent: doc.sla_reminder_sent,
+        warningSent: doc.sla_warning_sent,
+        escalated: doc.sla_escalated,
+    };
+    const action = slaActionFor(slot, getNode(flow, doc.current_node_id));
+    if (!action) return;
+    const r = await applySlaAction(db, doc, slot, action);
+    if (r.assigneeId) {
+        await db.query(
+            'UPDATE documents SET current_assignee_id = $1, current_role_id = NULL, current_department_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+            [r.assigneeId, doc.id]);
+    }
+    await db.query(
+        'UPDATE documents SET sla_reminder_sent = sla_reminder_sent OR $1, sla_warning_sent = sla_warning_sent OR $2, sla_escalated = sla_escalated OR $3 WHERE id = $4',
+        [Boolean(r.reminderSent), Boolean(r.warningSent), Boolean(r.escalated), doc.id]);
+};
+
 const checkSlas = async () => {
     const docs = await pool.query(`
-        SELECT * FROM documents
-        WHERE status = 'Pending' AND resume_at IS NULL AND sla_escalated = FALSE
-          AND COALESCE(delegation_sla_deadline, original_sla_deadline) IS NOT NULL`);
+        SELECT id FROM documents
+        WHERE status = 'Pending' AND resume_at IS NULL AND workflow_id IS NOT NULL
+          AND (parallel_branch_data IS NOT NULL
+               OR (delegation_sla_deadline IS NOT NULL AND sla_escalated = FALSE))`);
 
-    for (const doc of docs.rows) {
-        if (!doc.workflow_id || !doc.current_node_id) continue;
+    for (const { id } of docs.rows) {
         try {
             await inTransaction(async (db) => {
+                // Re-read under a row lock so an approval in progress can't race the escalation
+                const doc = (await db.query('SELECT * FROM documents WHERE id = $1 FOR UPDATE', [id])).rows[0];
+                if (!doc || doc.status !== 'Pending' || doc.resume_at) return;
                 const flow = await loadFlow(db, doc.workflow_id);
-                const node = flow ? getNode(flow, doc.current_node_id) : null;
-                const deadline = doc.delegation_sla_deadline || doc.original_sla_deadline;
-                const reminderHours = Math.abs(parseFloat(node?.data?.reminderHours)) || null;
-                const warningHours = Math.abs(parseFloat(node?.data?.warningHours)) || null;
-                const assignee = doc.current_assignee_id;
-
-                if (isBreached(deadline)) {
-                    const target = node?.data?.escalationUserId ? parseInt(node.data.escalationUserId, 10) : null;
-                    // Escalate once per step; the flag resets when the document moves to its next step
-                    await db.query('UPDATE documents SET sla_escalated = TRUE WHERE id = $1', [doc.id]);
-
-                    if (target) {
-                        await db.query(
-                            'UPDATE documents SET current_assignee_id = $1, current_role_id = NULL, current_department_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-                            [target, doc.id]
-                        );
-                        await db.query(
-                            "INSERT INTO approvals (document_id, approver_id, node_id, status, comments) VALUES ($1, $2, $3, 'Auto-Escalated', $4)",
-                            [doc.id, assignee, doc.current_node_id, `Deadline missed (${new Date(deadline).toISOString()}). Reassigned to the escalation target.`]
-                        );
-                        await db.query(
-                            'INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)',
-                            [doc.id, assignee, 'SLA Breached — Reassigned to Escalation Target']
-                        );
-                        await notifyUser(db, target, {
-                            title: `🚨 Escalated to you: "${doc.title}"`,
-                            body: `"${doc.title}" was escalated to you because its reviewer missed the deadline. Please act on it as soon as possible.`,
-                            type: 'danger',
-                            documentId: doc.id,
-                        });
-                        console.log(`🚨 SLA breach: document ${doc.id} escalated to user ${target}`);
-                    } else {
-                        await db.query(
-                            'INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)',
-                            [doc.id, assignee, 'SLA Breached — no escalation target configured for this step']
-                        );
-                        console.warn(`⚠️ SLA breach: document ${doc.id} has no escalation target`);
-                    }
-                    return;
-                }
-
-                if (warningHours && !doc.sla_warning_sent && isWithinHours(deadline, warningHours)) {
-                    await db.query('UPDATE documents SET sla_warning_sent = TRUE, sla_reminder_sent = TRUE WHERE id = $1', [doc.id]);
-                    await notifyUser(db, assignee, {
-                        title: `⚠️ SLA warning: "${doc.title}"`,
-                        body: `"${doc.title}" is about to miss its review deadline. Immediate action is required.`,
-                        type: 'danger',
-                        documentId: doc.id,
-                    });
-                } else if (reminderHours && !doc.sla_reminder_sent && isWithinHours(deadline, reminderHours)) {
-                    await db.query('UPDATE documents SET sla_reminder_sent = TRUE WHERE id = $1', [doc.id]);
-                    await notifyUser(db, assignee, {
-                        title: `⏰ Reminder: "${doc.title}"`,
-                        body: `"${doc.title}" is approaching its review deadline.`,
-                        type: 'warning',
-                        documentId: doc.id,
-                    });
-                }
+                if (!flow) return;
+                await checkDocumentSla(db, doc, flow);
             });
         } catch (err) {
-            console.error(`SLA check failed for document ${doc.id}:`, err.message);
+            console.error(`SLA check failed for document ${id}:`, err.message);
         }
     }
 };
