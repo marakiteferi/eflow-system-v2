@@ -3,6 +3,7 @@
  *
  *   npm run db:setup            create the database (if needed), schema, migrations and demo accounts
  *   npm run db:setup -- --reset drop and recreate the database first (deletes all data!)
+ *   add --no-demo to skip the demo offices, services and requests (see db/demo.js)
  *
  * Reads connection settings from server/.env.
  */
@@ -14,6 +15,8 @@ const { Client } = require('pg');
 
 const DB_NAME = process.env.DB_NAME;
 const RESET = process.argv.includes('--reset');
+// The automated tests set up their own offices and workflows
+const WITH_DEMO = !process.argv.includes('--no-demo') && process.env.NODE_ENV !== 'test';
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD || 'demo1234';
 
 // Account types used throughout the app: 1 = Student, 2 = Staff, 3 = Administrator
@@ -83,47 +86,22 @@ async function run() {
             );
         }
 
-        // Demo offices so office routing can be tried straight away (the automated tests set up their own)
-        if (process.env.NODE_ENV !== 'test') {
-            const id = async (email) => (await db.query('SELECT id FROM users WHERE email = $1', [email])).rows[0]?.id;
-            const demoOffices = [
-                {
-                    name: "Registrar's Office", description: 'Transcripts, enrolment and graduation', head: 'staff2@example.com',
-                    // Records Officer work that runs late goes to the Deputy Registrar, then the head
-                    positions: [{ name: 'Deputy Registrar' }, { name: 'Records Officer', reportsTo: 'Deputy Registrar' }],
-                    officers: [{ email: 'staff@example.com', position: 'Records Officer' }],
-                },
-                { name: 'Library', description: 'Library clearance', head: 'staff@example.com', positions: [], officers: [] },
-            ];
-            for (const o of demoOffices) {
-                const r = await db.query(
-                    `INSERT INTO offices (name, description, head_id) VALUES ($1, $2, $3)
-                     ON CONFLICT (name) DO NOTHING RETURNING id`,
-                    [o.name, o.description, await id(o.head)]
-                );
-                if (!r.rows[0]) continue;
-                const officeId = r.rows[0].id;
-                const positionIds = {};
-                for (const p of o.positions) {
-                    positionIds[p.name] = (await db.query(
-                        'INSERT INTO office_positions (office_id, name, reports_to_id) VALUES ($1, $2, $3) RETURNING id',
-                        [officeId, p.name, positionIds[p.reportsTo] || null])).rows[0].id;
-                }
-                for (const m of o.officers) {
-                    await db.query('INSERT INTO office_members (office_id, user_id, position_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-                        [officeId, await id(m.email), positionIds[m.position] || null]);
-                }
-            }
-        }
-
-        console.log('\n✅ Database ready. Demo accounts (password: ' + DEMO_PASSWORD + '):');
-        DEMO_USERS.forEach((u) => console.log(`   ${u.email}`));
     } finally {
         await db.end();
     }
+
+    let people = DEMO_USERS;
+    if (WITH_DEMO) {
+        console.log('Loading the demo: offices, services and requests');
+        const demo = require('./demo');
+        await demo.seedDemo();
+        people = [...DEMO_USERS.filter((u) => !demo.PEOPLE.some((p) => p.email === u.email)), ...demo.PEOPLE];
+    }
+    console.log('\n✅ Database ready. Demo accounts (password: ' + DEMO_PASSWORD + '):');
+    people.forEach((u) => console.log(`   ${u.email.padEnd(30)} ${u.name}`));
 }
 
-run().catch((err) => {
+run().then(() => process.exit(0)).catch((err) => {
     console.error('❌ Database setup failed:', err.message);
     process.exit(1);
 });
