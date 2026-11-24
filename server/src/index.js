@@ -46,11 +46,13 @@ app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK' }));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/workflows', require('./routes/workflowRoutes'));
 app.use('/api/documents', require('./routes/documentRoutes'));
-app.use('/api/approvals', require('./routes/approvalRoutes')); // We will build this next!
-app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/approvals', require('./routes/approvalRoutes')); // Approve, reject, one-time codes
+app.use('/api/admin', require('./routes/adminRoutes')); // Departments, audit log, statistics
+app.use('/api/people', require('./routes/peopleRoutes')); // Accounts, permissions, CSV import
 app.use('/api/users', require('./routes/userRoutes')); // For OOO and delegation
 app.use('/api/notifications', require('./routes/notificationRoutes')); // In-app notifications
-app.use('/api/offices', require('./routes/officeRoutes')); // Offices, officers and the shared queue
+app.use('/api/offices', require('./routes/officeRoutes')); // Offices, positions and the shared queue
+
 // 5. Start Server (only when run directly, so tests can import the app)
 if (require.main === module) {
     // Background jobs (delay timers, deadlines) run here unless a separate worker does them:

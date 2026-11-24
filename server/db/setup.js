@@ -16,7 +16,7 @@ const DB_NAME = process.env.DB_NAME;
 const RESET = process.argv.includes('--reset');
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD || 'demo1234';
 
-// Built-in role IDs used throughout the app: 1 = Student, 2 = Staff, 3 = Super Admin
+// Account types used throughout the app: 1 = Student, 2 = Staff, 3 = Administrator
 const DEMO_USERS = [
     { name: 'Demo Admin', email: 'admin@example.com', role_id: 3 },
     { name: 'Demo Staff', email: 'staff@example.com', role_id: 2 },
@@ -87,8 +87,13 @@ async function run() {
         if (process.env.NODE_ENV !== 'test') {
             const id = async (email) => (await db.query('SELECT id FROM users WHERE email = $1', [email])).rows[0]?.id;
             const demoOffices = [
-                { name: "Registrar's Office", description: 'Transcripts, enrolment and graduation', head: 'staff2@example.com', officers: ['staff@example.com'] },
-                { name: 'Library', description: 'Library clearance', head: 'staff@example.com', officers: [] },
+                {
+                    name: "Registrar's Office", description: 'Transcripts, enrolment and graduation', head: 'staff2@example.com',
+                    // Records Officer work that runs late goes to the Deputy Registrar, then the head
+                    positions: [{ name: 'Deputy Registrar' }, { name: 'Records Officer', reportsTo: 'Deputy Registrar' }],
+                    officers: [{ email: 'staff@example.com', position: 'Records Officer' }],
+                },
+                { name: 'Library', description: 'Library clearance', head: 'staff@example.com', positions: [], officers: [] },
             ];
             for (const o of demoOffices) {
                 const r = await db.query(
@@ -97,8 +102,16 @@ async function run() {
                     [o.name, o.description, await id(o.head)]
                 );
                 if (!r.rows[0]) continue;
-                for (const email of o.officers) {
-                    await db.query('INSERT INTO office_members (office_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [r.rows[0].id, await id(email)]);
+                const officeId = r.rows[0].id;
+                const positionIds = {};
+                for (const p of o.positions) {
+                    positionIds[p.name] = (await db.query(
+                        'INSERT INTO office_positions (office_id, name, reports_to_id) VALUES ($1, $2, $3) RETURNING id',
+                        [officeId, p.name, positionIds[p.reportsTo] || null])).rows[0].id;
+                }
+                for (const m of o.officers) {
+                    await db.query('INSERT INTO office_members (office_id, user_id, position_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+                        [officeId, await id(m.email), positionIds[m.position] || null]);
                 }
             }
         }

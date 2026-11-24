@@ -267,10 +267,11 @@ router.get('/', authenticateToken, async (req, res) => {
                 (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id AND dp.fulfilled_by_document_id IS NOT NULL) as fulfilled_prereqs
                 FROM documents d WHERE d.submitter_id = $1 ORDER BY d.created_at DESC`;
             values = [req.user.id];
-        } else if (req.user.role_id === 2 || req.user.role_id > 3) {
+        } else if (req.user.role_id === 2) {
             query = `
                 SELECT DISTINCT d.*,
                 (SELECT name FROM offices WHERE id = d.current_office_id) AS current_office_name,
+                (SELECT name FROM office_positions WHERE id = d.current_position_id) AS current_position_name,
                 (SELECT name FROM users WHERE id = d.current_assignee_id) AS current_assignee_name,
                                 (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id) as total_prereqs,
                 (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id AND dp.fulfilled_by_document_id IS NOT NULL) as fulfilled_prereqs
@@ -316,6 +317,7 @@ router.get('/', authenticateToken, async (req, res) => {
             query = `
                 SELECT d.*,
                 (SELECT name FROM offices WHERE id = d.current_office_id) AS current_office_name,
+                (SELECT name FROM office_positions WHERE id = d.current_position_id) AS current_position_name,
                 (SELECT name FROM users WHERE id = d.current_assignee_id) AS current_assignee_name,
                 (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id) as total_prereqs,
                 (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id AND dp.fulfilled_by_document_id IS NOT NULL) as fulfilled_prereqs
@@ -370,10 +372,9 @@ router.get('/verify-link/:token', async (req, res) => {
 
         // Fetch approval chain metadata (anonymized roles)
         const approvalsQuery = await pool.query(
-            `SELECT a.*, COALESCE(dr.name, CASE u.role_id WHEN 1 THEN 'Student' WHEN 2 THEN 'Staff' WHEN 3 THEN 'Administrator' END) as role_name
+            `SELECT a.*, CASE u.role_id WHEN 1 THEN 'Student' WHEN 2 THEN 'Staff' WHEN 3 THEN 'Administrator' END as role_name
              FROM approvals a
              JOIN users u ON a.approver_id = u.id
-             LEFT JOIN dynamic_roles dr ON u.role_id = dr.id
              WHERE a.document_id = $1 ORDER BY a.id ASC`,
             [link.document_id]
         );

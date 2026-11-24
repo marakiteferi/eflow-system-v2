@@ -117,6 +117,9 @@ const approve = async (token, documentId, comments = 'Looks good') => {
     return api('POST', '/approvals/approve', { token, body: { documentId, otp, comments } });
 };
 
+/** An admin verification code for `userId`, issued directly (the email flow is tested elsewhere). */
+const adminCode = async (userId) => (await require('../../src/services/oneTimeCodes').issueCode(userId, 'admin', { cooldownMs: 0 })).code;
+
 const reject = (token, documentId, comments = 'Missing signature page') =>
     api('POST', '/approvals/reject', { token, body: { documentId, comments } });
 
@@ -129,7 +132,7 @@ const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, dat
 const edge = (source, target, sourceHandle) => ({ id: `${source}-${target}-${sourceHandle || ''}`, source, target, ...(sourceHandle ? { sourceHandle } : {}) });
 
 module.exports = {
-    setup, teardown, databaseAvailable, api, login, makePdf, createWorkflow, submit, approve, reject, getDoc,
+    setup, teardown, databaseAvailable, api, login, makePdf, createWorkflow, submit, approve, reject, getDoc, adminCode,
     task, roleTask, node, edge,
     get pool() { return pool; },
     get origin() { return baseUrl.replace(/\/api$/, ''); },

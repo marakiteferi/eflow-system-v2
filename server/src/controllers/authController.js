@@ -4,6 +4,29 @@ const { signFileToken } = require('../middleware/fileAccess');
 
 // Initialize database connection
 const pool = require('../db');
+const { ACCOUNT_TYPES, loadAccess } = require('../services/access');
+
+/** What the client needs to know about the signed-in person. */
+const accountSummary = async (user) => {
+    const access = await loadAccess(user.id);
+    const offices = (await pool.query(
+        `SELECT o.id, o.name, (o.head_id = $1) AS is_head, p.name AS position_name
+         FROM offices o
+         LEFT JOIN office_members m ON m.office_id = o.id AND m.user_id = $1
+         LEFT JOIN office_positions p ON p.id = m.position_id
+         WHERE o.head_id = $1 OR m.user_id = $1
+         ORDER BY o.name`, [user.id])).rows;
+    return {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role_id: user.role_id,
+        account_type: ACCOUNT_TYPES[user.role_id] || 'Staff',
+        department_id: user.department_id,
+        permissions: access ? access.permissions : [],
+        offices,
+    };
+};
 
 // User Registration
 const registerUser = async (req, res) => {
@@ -45,16 +68,7 @@ const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Fetch user AND their dynamic role permissions in one query
-        const userQuery = await pool.query(`
-            SELECT u.*, 
-                   COALESCE(r.can_create_workflows, false) as can_create_workflows,
-                   COALESCE(r.can_manage_users, false) as can_manage_users,
-                   COALESCE(r.requires_workflow_approval, false) as requires_workflow_approval
-            FROM users u
-            LEFT JOIN dynamic_roles r ON u.role_id = r.id
-            WHERE u.email = $1
-        `, [email]);
+        const userQuery = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [String(email || '').trim()]);
 
         if (userQuery.rows.length === 0) {
             return res.status(400).json({ message: 'Invalid credentials' });
@@ -66,6 +80,9 @@ const loginUser = async (req, res) => {
         const validPassword = await bcrypt.compare(password, user.password_hash);
         if (!validPassword) {
             return res.status(400).json({ message: 'Invalid credentials' });
+        }
+        if (user.is_active === false) {
+            return res.status(403).json({ message: 'This account has been deactivated. Please contact an administrator.' });
         }
 
         // Generate JWT
@@ -80,27 +97,26 @@ const loginUser = async (req, res) => {
             [user.id]
         );
 
-        // Package up the legacy roles + new dynamic permissions
-        const isSuperAdmin = user.role_id === 3;
-        
-        res.status(200).json({ 
-            token, 
+        res.status(200).json({
+            token,
             fileToken: signFileToken(user),
-            user: { 
-                id: user.id, 
-                name: user.name, 
-                email: user.email,
-                role_id: user.role_id,
-                department_id: user.department_id,
-                // If they are legacy Admin (3), they get everything. Otherwise, use their dynamic role settings.
-                can_create_workflows: isSuperAdmin ? true : user.can_create_workflows,
-                can_manage_users: isSuperAdmin ? true : user.can_manage_users,
-                requires_workflow_approval: isSuperAdmin ? false : user.requires_workflow_approval
-            } 
+            user: await accountSummary(user),
         });
     } catch (error) {
         console.error(error.message);
         res.status(500).json({ message: 'Server error during login' });
     }
 };
-module.exports = { registerUser, loginUser };
+// The signed-in person's current account, permissions and offices
+const getMe = async (req, res) => {
+    try {
+        const user = (await pool.query('SELECT * FROM users WHERE id = $1', [req.user.id])).rows[0];
+        if (!user) return res.status(404).json({ message: 'Account not found.' });
+        res.json(await accountSummary(user));
+    } catch (error) {
+        console.error(error.message);
+        res.status(500).json({ message: 'Server error loading your account' });
+    }
+};
+
+module.exports = { registerUser, loginUser, getMe, accountSummary };
