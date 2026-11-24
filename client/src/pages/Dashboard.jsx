@@ -1275,7 +1275,7 @@ const Dashboard = () => {
                 <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">{(dynamicRoles.find(r => r.id === user?.role_id)?.name) || (isSuperAdmin ? 'System Admin' : 'Staff')}</p>
               </div>
               <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold border-2 border-white shadow-sm overflow-hidden">
-                <img src={`https://ui-avatars.com/api/?name=${user?.name}&background=eff6ff&color=1d4ed8`} alt="avatar" />
+                {(user?.name || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('')}
               </div>
             </div>
           </div>

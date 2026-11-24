@@ -511,7 +511,7 @@ router.post('/users/import-commit', authenticateToken, verifyAdmin, async (req, 
             await pool.query('COMMIT');
 
             // Send Magic Link Email
-            const resetLink = `http://localhost:3000/reset-password?token=${token}`;
+            const resetLink = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
             try {
                 await transporter.sendMail({
                     from: `"E-flow Admin" <${process.env.FROM_EMAIL}>`,

@@ -14,7 +14,14 @@ const pool = new Pool({
 // User Registration
 const registerUser = async (req, res) => {
     try {
-        const { name, email, password, role_id } = req.body;
+        const { name, email, password } = req.body;
+        // Self-registration always creates a Student account. Staff and admin roles
+        // can only be granted by an administrator (see PUT /api/admin/users/:id/role).
+        const STUDENT_ROLE_ID = 1;
+
+        if (!name || !email || !password) {
+            return res.status(400).json({ message: 'Name, email and password are required' });
+        }
 
         // Check if user already exists
         const userExists = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -29,7 +36,7 @@ const registerUser = async (req, res) => {
         // Insert into database
         const newUser = await pool.query(
             'INSERT INTO users (name, email, password_hash, role_id) VALUES ($1, $2, $3, $4) RETURNING id, name, email',
-            [name, email, hashedPassword, role_id]
+            [name, email, hashedPassword, STUDENT_ROLE_ID]
         );
 
         res.status(201).json({ message: 'User registered successfully', user: newUser.rows[0] });

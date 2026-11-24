@@ -26,6 +26,13 @@ yarn-error.log*
 # Uploads / Local Storage
 server/uploads/
 
+# Tesseract OCR language data (downloaded automatically at runtime)
+*.traineddata
+
+# Local databases
+*.db
+*.sqlite
+
 # IDE / Editor Files
 .vscode/
 .idea/
