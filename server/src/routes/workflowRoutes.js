@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { Pool } = require('pg');
 const authenticateToken = require('../middleware/authMiddleware');
+const { requireWorkflowManager } = require('../middleware/permissions');
 
 const pool = new Pool({
     user: process.env.DB_USER,
@@ -61,7 +62,7 @@ const hasCycle = (flow_structure) => {
 
 
 // POST: Save a new workflow
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', authenticateToken, requireWorkflowManager, async (req, res) => {
     const { name, flow_structure } = req.body;
     if (!name) return res.status(400).json({ message: 'Workflow name is required' });
 
@@ -113,7 +114,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
 });
 
 // PUT: Update an existing workflow
-router.put('/:id', authenticateToken, async (req, res) => {
+router.put('/:id', authenticateToken, requireWorkflowManager, async (req, res) => {
     const { name, flow_structure } = req.body;
     const workflowId = req.params.id;
 
@@ -141,7 +142,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
 });
 
 // DELETE: Remove a workflow (with safety check)
-router.delete('/:id', authenticateToken, async (req, res) => {
+router.delete('/:id', authenticateToken, requireWorkflowManager, async (req, res) => {
     const workflowId = req.params.id;
 
     let client;

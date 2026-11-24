@@ -3,9 +3,11 @@ const router = express.Router();
 const multer = require('multer');
 const { Pool } = require('pg');
 const authenticateToken = require('../middleware/authMiddleware');
+const { requireDocumentAccess } = require('../middleware/permissions');
 const Tesseract = require('tesseract.js');
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const pdfParse = require('pdf-parse');
 const nodemailer = require('nodemailer');
 
@@ -63,7 +65,8 @@ const insertNotification = async (userId, title, body, type = 'info', documentId
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'uploads/'),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+    // Random, unguessable file names so stored documents can't be found by guessing URLs
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(16).toString('hex')}${path.extname(file.originalname).toLowerCase()}`)
 });
 
 const pdfOnlyFilter = (req, file, cb) => {
@@ -413,7 +416,7 @@ router.put('/resubmit/:id', authenticateToken, upload.single('document'), async 
 });
 
 // 2b. GET: Fetch version history for a document
-router.get('/:id/versions', authenticateToken, async (req, res) => {
+router.get('/:id/versions', authenticateToken, requireDocumentAccess, async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT dv.*, u.name as submitted_by_name
@@ -431,7 +434,7 @@ router.get('/:id/versions', authenticateToken, async (req, res) => {
 });
 
 // 3. GET: Fetch history timeline
-router.get('/:id/history', authenticateToken, async (req, res) => {
+router.get('/:id/history', authenticateToken, requireDocumentAccess, async (req, res) => {
     try {
         const query = `
             SELECT a.status, a.comments, a.created_at, u.name as approver_name, a.node_id
@@ -447,7 +450,7 @@ router.get('/:id/history', authenticateToken, async (req, res) => {
 });
 
 // 3b. GET: Fetch clearances for a document
-router.get('/:id/clearances', authenticateToken, async (req, res) => {
+router.get('/:id/clearances', authenticateToken, requireDocumentAccess, async (req, res) => {
     try {
         const query = `
             SELECT 
@@ -682,7 +685,7 @@ router.patch('/:id/tag', authenticateToken, async (req, res) => {
 });
 
 // GET: Fetch document tag history
-router.get('/:id/tag-history', authenticateToken, async (req, res) => {
+router.get('/:id/tag-history', authenticateToken, requireDocumentAccess, async (req, res) => {
     try {
         const historyQuery = await pool.query(`
             SELECT h.id, h.tag_value as tag, h.created_at, u.name as applied_by, h.node_id
@@ -723,7 +726,7 @@ router.post('/:id/attachments', authenticateToken, (req, res, next) => upload.si
         // GENERATE HASH AND HMAC SIGNATURE
         const fileBuffer = fs.readFileSync(req.file.path);
         const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-        const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET || 'default_secret';
+        const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET;
         const signatureTimestamp = new Date().toISOString();
         const dataToSign = `${fileHash}|${req.user.id}|${signatureTimestamp}`;
         const attachmentSignature = crypto.createHmac('sha256', SIGNING_SECRET).update(dataToSign).digest('hex');
@@ -746,7 +749,7 @@ router.post('/:id/attachments', authenticateToken, (req, res, next) => upload.si
 });
 
 // GET: Fetch attachments for a document
-router.get('/:id/attachments', authenticateToken, async (req, res) => {
+router.get('/:id/attachments', authenticateToken, requireDocumentAccess, async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT da.*, u.name as uploaded_by_name 
@@ -764,7 +767,7 @@ router.get('/:id/attachments', authenticateToken, async (req, res) => {
 });
 
 // GET: Verify the full approval chain for a document
-router.get('/:id/verify-chain', authenticateToken, async (req, res) => {
+router.get('/:id/verify-chain', authenticateToken, requireDocumentAccess, async (req, res) => {
     try {
         const approvals = await pool.query(
             'SELECT * FROM approvals WHERE document_id = $1 ORDER BY id ASC',
@@ -791,7 +794,7 @@ router.get('/:id/verify-chain', authenticateToken, async (req, res) => {
 
             // Verify HMAC signature
             const dataToSign = `${a.document_hash}|${a.approver_id}|${a.created_at.toISOString()}`;
-            const expectedSig = crypto.createHmac('sha256', process.env.APPROVAL_SIGNING_SECRET || 'default_secret')
+            const expectedSig = crypto.createHmac('sha256', process.env.APPROVAL_SIGNING_SECRET)
                 .update(dataToSign).digest('hex');
 
             const sigValid = a.approval_signature === expectedSig;
@@ -868,7 +871,7 @@ router.post('/:id/verification-link', authenticateToken, async (req, res) => {
 
         res.status(201).json({ 
             message: 'Verification link generated',
-            link: `http://localhost:3000/verify/${token}`
+            link: `${process.env.CLIENT_URL || 'http://localhost:3000'}/verify/${token}`
         });
     } catch (err) {
         console.error('Error generating verification link:', err);
@@ -895,7 +898,7 @@ router.get('/:id/verification-links', authenticateToken, async (req, res) => {
         // Add full URL for convenience
         const mappedLinks = links.rows.map(l => ({
             ...l,
-            url: `http://localhost:3000/verify/${l.token}`
+            url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/verify/${l.token}`
         }));
 
         res.status(200).json(mappedLinks);

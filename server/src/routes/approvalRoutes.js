@@ -479,7 +479,7 @@ router.post('/approve', authenticateToken, async (req, res) => {
                         'UPDATE documents SET parallel_branch_data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
                         [JSON.stringify(existingBranches), documentId]
                     );
-                    const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET || 'default_secret';
+                    const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET;
                     const docBuffer = fs.readFileSync(doc.file_path);
                     const documentHash = crypto.createHash('sha256').update(docBuffer).digest('hex');
                     
@@ -778,7 +778,7 @@ router.post('/approve', authenticateToken, async (req, res) => {
         const nodeLogLabel = doc.current_node_id || 'System';
         
         // Create HMAC signature for main workflow approval
-        const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET || 'default_secret';
+        const SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET;
         const docBuffer = fs.readFileSync(doc.file_path);
         const documentHash = crypto.createHash('sha256').update(docBuffer).digest('hex');
         

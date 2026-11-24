@@ -54,7 +54,7 @@ router.post('/forgot-password', async (req, res) => {
             [user.id, token, expiresAt]
         );
 
-        const resetLink = `http://localhost:3000/reset-password?token=${token}`;
+        const resetLink = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
         console.log(`\n🔑 PASSWORD RESET LINK (also emailed): ${resetLink}\n`);
 
         try {
