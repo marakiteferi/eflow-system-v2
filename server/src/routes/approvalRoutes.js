@@ -211,20 +211,34 @@ const loadDocumentForUpdate = async (db, documentId) => {
 };
 
 // Workflow designers can switch off "approve" or "reject" for a step
-const actionAllowed = async (db, doc, actor, action) => {
-    if (!doc.workflow_id) return true;
-    const nodeId = Array.isArray(doc.parallel_branch_data)
-        ? doc.parallel_branch_data[engine.findBranchForUser(doc.parallel_branch_data, actor)]?.nodeId
-        : doc.current_node_id;
-    const wf = await db.query('SELECT flow_structure FROM workflows WHERE id = $1', [doc.workflow_id]);
-    const node = parseFlow(wf.rows[0]?.flow_structure).nodes.find((n) => n.id === nodeId);
+const actionAllowed = (node, action) => {
     const allowed = node?.data?.allowedActions;
     return !Array.isArray(allowed) || allowed.includes(action);
 };
 
+/**
+ * What a step asks of the reviewer before they approve: every item on its checklist
+ * confirmed, and one of its outcomes chosen. Returns an error message, or null when satisfied.
+ */
+const reviewRequirementsError = (node, { checklist, outcome }) => {
+    const required = engine.listOf(node?.data?.checklist);
+    const confirmed = new Set(engine.listOf(checklist));
+    const missing = required.filter((item) => !confirmed.has(item));
+    if (missing.length) return `Confirm every checklist item first. Still open: ${missing.join('; ')}.`;
+
+    const outcomes = engine.listOf(node?.data?.allowedTags);
+    if (outcomes.length) {
+        if (!outcome) return `Choose an outcome first (${outcomes.join(', ')}).`;
+        if (!outcomes.some((o) => o.toLowerCase() === String(outcome).trim().toLowerCase())) {
+            return `"${outcome}" is not one of this step's outcomes (${outcomes.join(', ')}).`;
+        }
+    }
+    return null;
+};
+
 // POST: Approve the current step and route the document onward
 router.post('/approve', authenticateToken, async (req, res) => {
-    const { documentId, otp, comments, signatureDrawing } = req.body;
+    const { documentId, otp, comments, signatureDrawing, checklist, outcome } = req.body;
     const codeStatus = await codes.checkCode(req.user.id, 'approval', otp, { documentId });
     if (codeStatus === 'expired') return res.status(400).json({ message: 'OTP has expired' });
     if (codeStatus !== 'ok') return res.status(400).json({ message: 'Invalid or incorrect OTP' });
@@ -249,9 +263,28 @@ router.post('/approve', authenticateToken, async (req, res) => {
             return res.status(403).json({ message: reason });
         }
 
-        if (!(await actionAllowed(client, doc, actor, 'approve'))) {
+        const step = await engine.stepNodeFor(client, doc, actor);
+        if (!actionAllowed(step, 'approve')) {
             await client.query('ROLLBACK');
             return res.status(403).json({ message: 'Approving is not allowed at this step.' });
+        }
+
+        const requirementError = reviewRequirementsError(step, { checklist, outcome });
+        if (requirementError) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: requirementError });
+        }
+
+        // The chosen outcome becomes the document's tag, which "Branch on outcome" steps route on
+        const outcomes = engine.listOf(step?.data?.allowedTags);
+        const chosenOutcome = outcomes.find((o) => o.toLowerCase() === String(outcome || '').trim().toLowerCase()) || null;
+        if (chosenOutcome) {
+            doc.metadata_tag = chosenOutcome;
+            await client.query('UPDATE documents SET metadata_tag = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [chosenOutcome, doc.id]);
+            await client.query(
+                "INSERT INTO document_tags_history (document_id, tag_name, tag_value, applied_by_user_id, node_id) VALUES ($1, 'metadata_tag', $2, $3, $4)",
+                [doc.id, chosenOutcome, req.user.id, step.id]
+            );
         }
 
         const openPrereqs = await client.query(
@@ -274,11 +307,17 @@ router.post('/approve', authenticateToken, async (req, res) => {
 
         await client.query(
             `INSERT INTO approvals (document_id, approver_id, node_id, status, comments, document_hash, approval_signature,
-                                    previous_approval_id, previous_approval_hash, created_at, signature_drawing)
-             VALUES ($1, $2, $3, 'Approved', $4, $5, $6, $7, $8, $9, $10)`,
+                                    previous_approval_id, previous_approval_hash, created_at, signature_drawing,
+                                    checklist_confirmed, outcome)
+             VALUES ($1, $2, $3, 'Approved', $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
             [doc.id, req.user.id, result.nodeId || 'System', comments || 'Verified by 2FA', sig.documentHash,
-             sig.approvalSignature, sig.previousApprovalId, sig.previousApprovalHash, sig.createdAt, signatureDrawing || null]
+             sig.approvalSignature, sig.previousApprovalId, sig.previousApprovalHash, sig.createdAt, signatureDrawing || null,
+             engine.listOf(step?.data?.checklist).length ? JSON.stringify(engine.listOf(step.data.checklist)) : null, chosenOutcome]
         );
+        if (chosenOutcome) {
+            await client.query('INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)',
+                [doc.id, req.user.id, `Outcome chosen: "${chosenOutcome}"`]);
+        }
 
         let auditMessage = 'Document Approved - Routed automatically to next step';
         if (result.waitingOnBranches) auditMessage = 'Parallel Branch Approved — Awaiting Other Reviewers';
@@ -350,7 +389,7 @@ router.post('/reject', authenticateToken, async (req, res) => {
             return res.status(403).json({ message: 'You are not authorized to reject this document at this stage.' });
         }
 
-        if (!(await actionAllowed(client, doc, actor, 'reject'))) {
+        if (!actionAllowed(await engine.stepNodeFor(client, doc, actor), 'reject')) {
             await client.query('ROLLBACK');
             return res.status(403).json({ message: 'Rejecting is not allowed at this step.' });
         }

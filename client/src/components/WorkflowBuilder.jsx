@@ -1,217 +1,363 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import ReactFlow, {
-  addEdge, applyNodeChanges, applyEdgeChanges, Background, Controls, MiniMap,
+  addEdge, applyNodeChanges, applyEdgeChanges, Background, BackgroundVariant, Controls, MiniMap,
   Handle, Position, MarkerType, ReactFlowProvider, useReactFlow
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import api from '../api';
 
 // ==========================================
-// 1. NODE DEFINITIONS (COMPACT CARDS)
+// 0. SHARED BITS: icons, step types, durations
 // ==========================================
 
-// Base Node Wrapper for consistent styling
-const BaseNode = ({ id, typeName, icon, bgColor, borderColor, textColor, title, badge, selected }) => (
-  <div className={`rounded-md shadow-sm border-2 ${selected ? 'border-blue-600 shadow-md ring-2 ring-blue-300' : borderColor} bg-white flex overflow-hidden w-[180px]`}>
-    {/* Colored left strip */}
-    <div className={`w-2 ${bgColor}`}></div>
-    <div className="flex-1 p-2 bg-white flex flex-col justify-center">
-      <div className="flex items-center gap-1.5 mb-1">
-        <span className="text-sm">{icon}</span>
-        <span className={`text-[10px] uppercase font-bold tracking-wider ${textColor}`}>{typeName}</span>
-      </div>
-      <div className="text-xs font-bold text-gray-800 truncate">{title || 'Untitled Node'}</div>
-      {badge && (
-        <div className="mt-1.5 bg-gray-100 text-[9px] text-gray-600 px-1.5 py-0.5 rounded uppercase font-bold truncate">
-          {badge}
-        </div>
-      )}
-    </div>
-  </div>
+const ICON_PATHS = {
+  task: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z',
+  condition: 'M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4',
+  email: 'M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z',
+  delay: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
+  parallel: 'M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2',
+  join: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10',
+  spawn: 'M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z',
+  office: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4',
+  user: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z',
+  checklist: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
+  outcome: 'M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z',
+  trash: 'M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16',
+  close: 'M6 18L18 6M6 6l12 12',
+  back: 'M10 19l-7-7m0 0l7-7m-7 7h18',
+  folder: 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z',
+  plus: 'M12 4v16m8-8H4',
+  settings: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z',
+  expand: 'M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4',
+  shrink: 'M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25',
+  warning: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z',
+};
+
+const Icon = ({ name, className = 'w-4 h-4' }) => (
+  <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d={ICON_PATHS[name]} />
+  </svg>
 );
 
-// 1. Task (Approval) Node
-const TaskNode = ({ id, data, selected }) => {
-  let badgeText = '⚠️ Unassigned';
+// Every step type with its colours (full class names so Tailwind keeps them) and a plain description
+const STEP_TYPES = {
+  task:      { name: 'Approval', label: 'Approval step', hint: 'An office or person reviews and signs', tile: 'bg-indigo-100 text-indigo-700', ring: 'ring-indigo-400', bar: 'bg-indigo-500', handle: '#6366f1' },
+  condition: { name: 'Branch', label: 'Branch on outcome', hint: 'Route by the decision made earlier', tile: 'bg-amber-100 text-amber-700', ring: 'ring-amber-400', bar: 'bg-amber-500', handle: '#f59e0b' },
+  parallel:  { name: 'Parallel', label: 'Parallel review', hint: 'Send to several offices at once', tile: 'bg-orange-100 text-orange-700', ring: 'ring-orange-400', bar: 'bg-orange-500', handle: '#f97316' },
+  join:      { name: 'Merge', label: 'Wait for all', hint: 'Continue once every branch is done', tile: 'bg-teal-100 text-teal-700', ring: 'ring-teal-400', bar: 'bg-teal-500', handle: '#14b8a6' },
+  email:     { name: 'Email', label: 'Send email', hint: 'Notify the applicant or anyone else', tile: 'bg-emerald-100 text-emerald-700', ring: 'ring-emerald-400', bar: 'bg-emerald-500', handle: '#10b981' },
+  delay:     { name: 'Wait', label: 'Wait', hint: 'Pause for a set time, then continue', tile: 'bg-violet-100 text-violet-700', ring: 'ring-violet-400', bar: 'bg-violet-500', handle: '#8b5cf6' },
+  spawn:     { name: 'Start services', label: 'Start other services', hint: 'Open follow-up requests automatically', tile: 'bg-pink-100 text-pink-700', ring: 'ring-pink-400', bar: 'bg-pink-500', handle: '#ec4899' },
+};
 
+const listOf = (v) => (Array.isArray(v) ? v : String(v || '').split(',')).map((x) => String(x).trim()).filter(Boolean);
+
+const UNITS = [
+  { id: 'weeks', hours: 168, one: 'week', many: 'weeks' },
+  { id: 'days', hours: 24, one: 'day', many: 'days' },
+  { id: 'hours', hours: 1, one: 'hour', many: 'hours' },
+];
+const bestUnit = (hours) => UNITS.find((u) => hours > 0 && hours % u.hours === 0) || UNITS[2];
+
+/** "4 hours", "3 days", "1 week" (the engine stores every duration in hours) */
+const formatDuration = (hours) => {
+  const h = parseFloat(hours);
+  if (!h || h <= 0) return '';
+  const u = bestUnit(h);
+  const n = h / u.hours;
+  return `${n} ${n === 1 ? u.one : u.many}`;
+};
+
+// ==========================================
+// 1. STEP CARDS ON THE CANVAS
+// ==========================================
+
+const Chip = ({ icon, children, tone = 'gray' }) => (
+  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold max-w-full ${tone === 'warn' ? 'bg-red-50 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
+    {icon && <Icon name={icon} className="w-3 h-3 shrink-0" />}
+    <span className="truncate">{children}</span>
+  </span>
+);
+
+const StepCard = ({ type, title, subtitle, warn, chips, selected }) => {
+  const t = STEP_TYPES[type];
+  return (
+    <div className={`w-[260px] rounded-xl bg-white border border-gray-200 shadow-sm transition-shadow ${selected ? `ring-2 ${t.ring} shadow-lg` : 'hover:shadow-md'}`}>
+      <div className="flex items-start gap-2.5 p-3">
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${t.tile}`}><Icon name={type} /></div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">{t.name}</div>
+          <div className="text-sm font-semibold text-gray-900 truncate">{title || t.label}</div>
+          {subtitle && (
+            <div className={`text-xs truncate mt-0.5 flex items-center gap-1 ${warn ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
+              {warn && <Icon name="warning" className="w-3 h-3 shrink-0" />}{subtitle}
+            </div>
+          )}
+        </div>
+      </div>
+      {chips && chips.length > 0 && (
+        <div className="px-3 pb-2.5 -mt-1 flex flex-wrap gap-1">{chips}</div>
+      )}
+    </div>
+  );
+};
+
+const handleStyle = (type) => ({ background: STEP_TYPES[type].handle, width: 10, height: 10, border: '2px solid white' });
+
+/** Who an approval step goes to, in words, plus whether it still needs setting up */
+const describeAssignee = (data) => {
   if (data.assignmentStrategy === 'office') {
-    const office = data.officesList?.find(o => o.id === parseInt(data.officeId));
-    const who = data.officePosition === 'head' ? 'Head'
-      : data.officePosition === 'position' ? (office?.positions?.find(p => p.id === parseInt(data.positionId))?.name || '⚠️ Pick a position')
-      : 'Any officer';
-    badgeText = office ? `🏛️ ${office.name} · ${who}` : '⚠️ Pick an office';
-  } else if (data.assignmentStrategy === 'role_based') {
-    const roleName = data.rolesList?.find(r => r.id === parseInt(data.roleId))?.name || 'Role';
-    if (data.routingType === 'ANY') badgeText = `👥 Any ${roleName}`;
-    else if (data.routingType === 'INITIATOR_DEPT') badgeText = `🏢 Dept ${roleName}`;
-    else if (data.routingType === 'SPECIFIC') {
-      const deptName = data.departments?.find(d => d.id === parseInt(data.targetDepartmentId))?.name || 'Dept';
-      badgeText = `🏢 ${deptName} ${roleName}`;
+    const office = data.officesList?.find((o) => o.id === parseInt(data.officeId));
+    if (!office) return { text: 'Choose an office', warn: true };
+    if (data.officePosition === 'head') return { text: `${office.name} · Head` };
+    if (data.officePosition === 'position') {
+      const pos = office.positions?.find((p) => p.id === parseInt(data.positionId));
+      return pos ? { text: `${office.name} · ${pos.name}` } : { text: 'Choose a position', warn: true };
     }
-  } else if (data.assignee) {
-    badgeText = `👤 ${data.staffList?.find(s => s.id === parseInt(data.assignee))?.name || 'User'}`;
+    return { text: `${office.name} · Any officer` };
   }
+  if (data.assignmentStrategy === 'role_based' && data.roleId) {
+    const roleName = data.rolesList?.find((r) => r.id === parseInt(data.roleId))?.name || 'Role';
+    if (data.routingType === 'INITIATOR_DEPT') return { text: `Applicant's department · ${roleName}` };
+    if (data.routingType === 'SPECIFIC') {
+      const deptName = data.departments?.find((d) => d.id === parseInt(data.targetDepartmentId))?.name || 'Department';
+      return { text: `${deptName} · ${roleName}` };
+    }
+    return { text: `Any ${roleName}` };
+  }
+  if (data.assignee) return { text: data.staffList?.find((s) => s.id === parseInt(data.assignee))?.name || 'A person' };
+  return { text: 'Choose who reviews', warn: true };
+};
 
+const TaskNode = ({ data, selected }) => {
+  const who = describeAssignee(data);
+  const deadline = formatDuration(data.escalationHours || data.slaHours);
+  const checks = listOf(data.checklist).length;
+  const outcomes = listOf(data.allowedTags);
+  const chips = [
+    deadline && <Chip key="d" icon="delay">{deadline}{data.workingDaysOnly ? ' (working)' : ''}</Chip>,
+    checks > 0 && <Chip key="c" icon="checklist">{checks} check{checks > 1 ? 's' : ''}</Chip>,
+    outcomes.length > 0 && <Chip key="o" icon="outcome">{outcomes.join(' / ')}</Chip>,
+  ].filter(Boolean);
   return (
     <>
-      <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-blue-500" />
-      <BaseNode id={id} typeName="Approval" icon="🟦" bgColor="bg-blue-500" borderColor="border-blue-200" textColor="text-blue-600" title={data.label} badge={badgeText} selected={selected} />
-      <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-blue-500" />
+      <Handle type="target" position={Position.Top} style={handleStyle('task')} />
+      <StepCard type="task" title={data.label} subtitle={who.text} warn={who.warn} chips={chips} selected={selected} />
+      <Handle type="source" position={Position.Bottom} style={handleStyle('task')} />
     </>
   );
 };
 
-// 2. Condition Node (If/Else)
-const ConditionNode = ({ id, data, selected }) => (
-  <>
-    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-amber-500" />
-    <BaseNode id={id} typeName="Condition" icon="🔀" bgColor="bg-amber-500" borderColor="border-amber-200" textColor="text-amber-600" title={data.label || 'If/Else'} badge={data.conditionValue ? `Tags: ${data.conditionValue}` : 'No tags set'} selected={selected} />
-    <Handle type="source" position={Position.Bottom} id="true" style={{ left: '25%', background: '#22c55e', width: '10px', height: '10px' }} />
-    <div className="absolute -bottom-4 left-[15%] text-[9px] font-bold text-green-600">TRUE</div>
-    <Handle type="source" position={Position.Bottom} id="false" style={{ left: '75%', background: '#ef4444', width: '10px', height: '10px' }} />
-    <div className="absolute -bottom-4 left-[65%] text-[9px] font-bold text-red-600">FALSE</div>
-  </>
-);
+const ConditionNode = ({ data, selected }) => {
+  const values = listOf(data.conditionValue);
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={handleStyle('condition')} />
+      <StepCard type="condition" title={data.label} selected={selected}
+        subtitle={values.length ? `Outcome is ${values.join(' or ')}` : 'Choose the outcome to match'} warn={!values.length} />
+      <Handle type="source" position={Position.Bottom} id="true" style={{ ...handleStyle('condition'), left: '28%', background: '#16a34a' }} />
+      <div className="absolute -bottom-5 left-[28%] -translate-x-1/2 text-[10px] font-bold text-green-700">Yes</div>
+      <Handle type="source" position={Position.Bottom} id="false" style={{ ...handleStyle('condition'), left: '72%', background: '#9ca3af' }} />
+      <div className="absolute -bottom-5 left-[72%] -translate-x-1/2 text-[10px] font-bold text-gray-500">No</div>
+    </>
+  );
+};
 
-// 3. Email Notification Node
-const EmailNode = ({ id, data, selected }) => (
-  <>
-    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-green-500" />
-    <BaseNode id={id} typeName="Email" icon="📧" bgColor="bg-green-500" borderColor="border-green-200" textColor="text-green-600" title={data.label || 'Send Email'} badge={data.recipient ? `To: ${data.recipient}` : 'No recipient'} selected={selected} />
-    <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-green-500" />
-  </>
-);
+const simpleNode = (type, describe) => ({ data, selected }) => {
+  const { text, warn } = describe(data);
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={handleStyle(type)} />
+      <StepCard type={type} title={data.label} subtitle={text} warn={warn} selected={selected} />
+      <Handle type="source" position={Position.Bottom} style={handleStyle(type)} />
+    </>
+  );
+};
 
-// 4. Delay / Timer Node
-const DelayNode = ({ id, data, selected }) => (
-  <>
-    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-purple-500" />
-    <BaseNode id={id} typeName="Delay" icon="⏳" bgColor="bg-purple-500" borderColor="border-purple-200" textColor="text-purple-600" title={data.label || 'Wait'} badge={data.delayHours ? `⏳ ${data.delayHours} hrs` : 'No delay set'} selected={selected} />
-    <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-purple-500" />
-  </>
-);
-
-// 5. Parallel Split Node
-const ParallelNode = ({ id, data, selected }) => (
-  <>
-    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-orange-500" />
-    <BaseNode id={id} typeName="Parallel" icon="⑂" bgColor="bg-orange-500" borderColor="border-orange-200" textColor="text-orange-600" title={data.label || 'Split Paths'} badge="Run concurrently" selected={selected} />
-    {/* Multiple outgoing standard handles (could be custom, but basic allows many connections) */}
-    <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-orange-500" />
-  </>
-);
-
-
-// 6. Spawn Node
-const SpawnNode = ({ id, data, selected }) => (
-  <>
-    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-pink-500" />
-    <BaseNode id={id} typeName="Spawn" icon="🚀" bgColor="bg-pink-500" borderColor="border-pink-200" textColor="text-pink-600" title={data.label || 'Spawn Workflows'} badge={data.spawnIds ? `${data.spawnIds.split(',').length} Flows` : 'Unconfigured'} selected={selected} />
-    <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-pink-500" />
-  </>
-);
-
-// 7. Join / Merge Node
-const JoinNode = ({ id, data, selected }) => (
-  <>
-    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-teal-500" />
-    <BaseNode id={id} typeName="Merge Gate" icon="⛙" bgColor="bg-teal-500" borderColor="border-teal-200" textColor="text-teal-600" title={data.label || 'Join Paths'} badge="Wait for all" selected={selected} />
-    <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-teal-500" />
-  </>
-);
+const EmailNode = simpleNode('email', (d) => (d.recipient ? { text: `To ${d.recipient}` } : { text: 'Add a recipient', warn: true }));
+const DelayNode = simpleNode('delay', (d) => (parseFloat(d.delayHours) > 0 ? { text: `For ${formatDuration(d.delayHours)}` } : { text: 'Set how long to wait', warn: true }));
+const ParallelNode = simpleNode('parallel', () => ({ text: 'All connected steps start together' }));
+const JoinNode = simpleNode('join', () => ({ text: 'Continues when every branch is done' }));
+const SpawnNode = simpleNode('spawn', (d) => {
+  const n = listOf(d.spawnIds).length;
+  return n ? { text: `${n} service${n > 1 ? 's' : ''}` } : { text: 'Choose services', warn: true };
+});
 
 // ==========================================
-// 2b. EMAIL PROPERTIES SUB-COMPONENT
+// 2. SETTINGS PANEL BUILDING BLOCKS
 // ==========================================
-const EMAIL_VARS = ['{{submitter_email}}', '{{submitter_name}}', '{{document_title}}'];
+
+const fieldClass = 'w-full text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-500';
+
+const Section = ({ icon, title, summary, children, defaultOpen = true }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="border-b border-gray-100 last:border-b-0">
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
+        className="w-full flex items-center gap-2.5 px-5 py-3.5 text-left hover:bg-gray-50">
+        {icon && <Icon name={icon} className="w-4 h-4 text-gray-400" />}
+        <span className="text-sm font-semibold text-gray-900">{title}</span>
+        {!open && summary && <span className="ml-auto text-xs text-gray-500 truncate max-w-[55%]">{summary}</span>}
+        <svg className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${!open && summary ? '' : 'ml-auto'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+      </button>
+      {open && <div className="px-5 pb-5 space-y-4">{children}</div>}
+    </section>
+  );
+};
+
+const Label = ({ children, hint }) => (
+  <div className="mb-1.5">
+    <div className="text-xs font-semibold text-gray-700">{children}</div>
+    {hint && <div className="text-xs text-gray-500 mt-0.5">{hint}</div>}
+  </div>
+);
+
+const Toggle = ({ checked, onChange, label, description }) => (
+  <label className="flex items-start justify-between gap-3 cursor-pointer">
+    <span>
+      <span className="block text-sm text-gray-800">{label}</span>
+      {description && <span className="block text-xs text-gray-500 mt-0.5">{description}</span>}
+    </span>
+    <span className="relative shrink-0 mt-0.5">
+      <input type="checkbox" className="sr-only peer" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="block w-9 h-5 rounded-full bg-gray-300 peer-checked:bg-indigo-600 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-300" />
+      <span className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4" />
+    </span>
+  </label>
+);
+
+/** A duration typed as a number and a unit; the value is kept in hours */
+const DurationInput = ({ hours, onChange, ariaLabel, allowEmpty = true }) => {
+  const h = parseFloat(hours) || 0;
+  const [unit, setUnit] = useState(bestUnit(h).id);
+  const u = UNITS.find((x) => x.id === unit);
+  const amount = h ? +(h / u.hours).toFixed(2) : '';
+  return (
+    <div className="flex gap-2">
+      <input type="number" min="0" step="any" aria-label={ariaLabel} value={amount}
+        placeholder={allowEmpty ? 'Off' : '0'}
+        onChange={(e) => { const n = Math.max(0, parseFloat(e.target.value) || 0); onChange(n ? +(n * u.hours).toFixed(4) : ''); }}
+        className={`${fieldClass.replace('w-full', 'w-24')} shrink-0`} />
+      <select value={unit} aria-label={`${ariaLabel} unit`}
+        onChange={(e) => { const next = UNITS.find((x) => x.id === e.target.value); setUnit(next.id); if (h) onChange(+((h / u.hours) * next.hours).toFixed(4)); }}
+        className={`${fieldClass.replace('w-full', 'min-w-0')} flex-1`}>
+        {UNITS.slice().reverse().map((x) => <option key={x.id} value={x.id}>{x.many}</option>)}
+      </select>
+    </div>
+  );
+};
+
+/** Values as removable chips, with suggestions to add in one click and free typing (Enter or comma adds) */
+const ChipsInput = ({ values, onChange, placeholder, suggestions = [], tone = 'indigo' }) => {
+  const [text, setText] = useState('');
+  const has = (v) => values.some((x) => x.toLowerCase() === v.toLowerCase());
+  const add = (v) => {
+    const clean = v.trim().replace(/,/g, '');
+    if (clean && !has(clean)) onChange([...values, clean]);
+    setText('');
+  };
+  const chipTone = tone === 'amber' ? 'bg-amber-100 text-amber-800' : 'bg-indigo-100 text-indigo-800';
+  const open = suggestions.filter((s) => !has(s));
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5 p-2 border border-gray-300 rounded-lg bg-white focus-within:ring-2 focus-within:ring-indigo-200 focus-within:border-indigo-500">
+        {values.map((v) => (
+          <span key={v} className={`inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md text-xs font-semibold ${chipTone}`}>
+            {v}
+            <button type="button" aria-label={`Remove ${v}`} onClick={() => onChange(values.filter((x) => x !== v))} className="opacity-60 hover:opacity-100 p-0.5">
+              <Icon name="close" className="w-3 h-3" />
+            </button>
+          </span>
+        ))}
+        <input value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(text); }
+            if (e.key === 'Backspace' && !text && values.length) onChange(values.slice(0, -1));
+          }}
+          onBlur={() => text && add(text)}
+          placeholder={values.length ? '' : placeholder}
+          className="flex-1 min-w-[90px] text-sm outline-none bg-transparent py-0.5" />
+      </div>
+      {open.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {open.map((s) => (
+            <button key={s} type="button" onClick={() => add(s)}
+              className="px-2 py-0.5 rounded-md text-xs font-medium border border-dashed border-gray-300 text-gray-600 hover:border-indigo-400 hover:text-indigo-700">
+              + {s}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ==========================================
+// 2b. EMAIL SETTINGS
+// ==========================================
+const EMAIL_VARS = [
+  { token: '{{submitter_name}}', label: 'Applicant name' },
+  { token: '{{submitter_email}}', label: 'Applicant email' },
+  { token: '{{document_title}}', label: 'Document title' },
+];
 
 const EmailProperties = ({ data, onChange }) => {
-  const recipientRef = useRef(null);
-  const subjectRef = useRef(null);
-  const bodyRef = useRef(null);
-  const [activeField, setActiveField] = useState(null);
-  const [activeRef, setActiveRef] = useState(null);
+  const refs = { recipient: useRef(null), subject: useRef(null), body: useRef(null) };
+  const [activeField, setActiveField] = useState('body');
 
   const insertVariable = (varText) => {
-    const field = activeField || 'body';
-    const ref = activeRef || bodyRef;
-    const el = ref.current;
-    if (!el) {
-      onChange(field, (data[field] || '') + varText);
-      return;
-    }
-    const start = el.selectionStart ?? (data[field] || '').length;
-    const end = el.selectionEnd ?? start;
+    const field = activeField;
+    const el = refs[field].current;
     const current = data[field] || '';
+    const start = el?.selectionStart ?? current.length;
+    const end = el?.selectionEnd ?? start;
     onChange(field, current.slice(0, start) + varText + current.slice(end));
     requestAnimationFrame(() => {
-      if (el) {
-        el.selectionStart = start + varText.length;
-        el.selectionEnd = start + varText.length;
-        el.focus();
-      }
+      if (el) { el.selectionStart = el.selectionEnd = start + varText.length; el.focus(); }
     });
   };
 
   return (
     <>
-      <div className="bg-green-50 border border-green-200 rounded p-2">
-        <p className="text-[10px] font-bold text-green-800 mb-1.5">⚡ Click to Insert Variable</p>
-        <div className="flex flex-wrap gap-1">
-          {EMAIL_VARS.map(v => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => insertVariable(v)}
-              className="text-[10px] bg-green-100 hover:bg-green-200 active:bg-green-300 text-green-800 border border-green-300 px-1.5 py-0.5 rounded font-mono cursor-pointer transition-colors"
-            >
-              {v}
+      <div>
+        <Label hint="Use the applicant's address, or type any email.">To</Label>
+        <input ref={refs.recipient} type="text" value={data.recipient || ''}
+          onChange={(e) => onChange('recipient', e.target.value)} onFocus={() => setActiveField('recipient')}
+          className={fieldClass} placeholder="{{submitter_email}}" />
+      </div>
+      <div>
+        <Label>Subject</Label>
+        <input ref={refs.subject} type="text" value={data.subject || ''}
+          onChange={(e) => onChange('subject', e.target.value)} onFocus={() => setActiveField('subject')}
+          className={fieldClass} placeholder="Update on your request" />
+      </div>
+      <div>
+        <Label>Message</Label>
+        <textarea ref={refs.body} value={data.body || ''}
+          onChange={(e) => onChange('body', e.target.value)} onFocus={() => setActiveField('body')}
+          className={`${fieldClass} h-28`} placeholder="Dear {{submitter_name}}, your request '{{document_title}}' has been reviewed..." />
+      </div>
+      <div>
+        <Label hint="Inserted where your cursor is.">Insert a detail</Label>
+        <div className="flex flex-wrap gap-1.5">
+          {EMAIL_VARS.map((v) => (
+            <button key={v.token} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => insertVariable(v.token)}
+              className="px-2 py-1 rounded-md text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100">
+              {v.label}
             </button>
           ))}
         </div>
-        <p className="text-[9px] text-green-600 mt-1">Click a field first, then click a variable to insert it at your cursor.</p>
-      </div>
-      <div>
-        <label className="block text-xs font-bold text-gray-700 mb-1">Recipient Address</label>
-        <input
-          ref={recipientRef}
-          type="text" value={data.recipient || ''}
-          onChange={e => onChange('recipient', e.target.value)}
-          onFocus={() => { setActiveField('recipient'); setActiveRef(recipientRef); }}
-          className="w-full text-sm border rounded p-2"
-          placeholder="{{submitter_email}} or user@domain.com"
-        />
-      </div>
-      <div>
-        <label className="block text-xs font-bold text-gray-700 mb-1">Subject</label>
-        <input
-          ref={subjectRef}
-          type="text" value={data.subject || ''}
-          onChange={e => onChange('subject', e.target.value)}
-          onFocus={() => { setActiveField('subject'); setActiveRef(subjectRef); }}
-          className="w-full text-sm border rounded p-2"
-          placeholder="Update on document"
-        />
-      </div>
-      <div>
-        <label className="block text-xs font-bold text-gray-700 mb-1">Body Template</label>
-        <textarea
-          ref={bodyRef}
-          value={data.body || ''}
-          onChange={e => onChange('body', e.target.value)}
-          onFocus={() => { setActiveField('body'); setActiveRef(bodyRef); }}
-          className="w-full text-sm border rounded p-2 h-28"
-          placeholder="Dear {{submitter_name}}, your application for '{{document_title}}' has been reviewed..."
-        />
       </div>
     </>
   );
 };
 
 // ==========================================
-// 2. RIGHT INSPECTOR PANEL
+// 2c. RIGHT SETTINGS PANEL
 // ==========================================
-const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [], rolesList = [], departments = [], officesList = [], savedWorkflows = [], selectedWorkflowId = '' }) => {
+const DEADLINE_PRESETS = [4, 24, 72, 168];
+
+const PropertyInspector = ({ selectedNode, allNodes = [], updateNodeData, closePanel, deleteNode, staffList = [], rolesList = [], departments = [], officesList = [], savedWorkflows = [], selectedWorkflowId = '' }) => {
   // Hooks MUST be called before any early returns (React rules of hooks)
   const [newCheckItem, setNewCheckItem] = useState('');
   const [rolePreviewUsers, setRolePreviewUsers] = useState([]);
@@ -222,6 +368,7 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
   // Open the advanced (person / role) options when the step already uses them
   useEffect(() => {
     setShowAdvanced(['specific_user', 'role_based'].includes(selectedNode?.data?.assignmentStrategy) || Boolean(selectedNode?.data?.assignee && !selectedNode?.data?.assignmentStrategy));
+    setNewCheckItem('');
     // Only when another step is selected
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNode?.id]);
@@ -250,16 +397,23 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
 
   if (!selectedNode) return null;
 
+  const type = STEP_TYPES[selectedNode.type] || STEP_TYPES.task;
   const onChange = (field, value) => updateNodeData(selectedNode.id, field, value);
 
+  const checklist = listOf(data.checklist);
   const addChecklistItem = () => {
     if (newCheckItem.trim()) {
-      onChange('checklist', [...(data.checklist || []), newCheckItem.trim()]);
+      onChange('checklist', [...checklist, newCheckItem.trim()]);
       setNewCheckItem('');
     }
   };
-  const removeChecklistItem = (idx) => {
-    onChange('checklist', (data.checklist || []).filter((_, i) => i !== idx));
+  const removeChecklistItem = (idx) => onChange('checklist', checklist.filter((_, i) => i !== idx));
+  const moveChecklistItem = (idx, dir) => {
+    const next = [...checklist];
+    const j = idx + dir;
+    if (j < 0 || j >= next.length) return;
+    [next[idx], next[j]] = [next[j], next[idx]];
+    onChange('checklist', next);
   };
 
   const getSmartDropdownValue = () => {
@@ -300,463 +454,371 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
     }
   };
 
+  const deadlineHours = parseFloat(data.escalationHours || data.slaHours) || 0;
+  const setDeadline = (h) => { onChange('escalationHours', h || ''); if (data.slaHours) onChange('slaHours', ''); };
+  const actions = Array.isArray(data.allowedActions) ? data.allowedActions : ['approve', 'reject'];
+  const toggleAction = (action, on) => onChange('allowedActions', on ? [...new Set([...actions, action])] : actions.filter((a) => a !== action));
+  const outcomes = listOf(data.allowedTags);
+  // Outcomes defined by the approval steps in this workflow, offered to "Branch on outcome"
+  const knownOutcomes = [...new Set(allNodes.filter((n) => n.type === 'task').flatMap((n) => listOf(n.data?.allowedTags)))];
+
   return (
-    <div className="w-80 bg-white border-l border-gray-200 shadow-2xl h-full flex flex-col absolute right-0 top-0 z-20">
-      <div className="flex justify-between items-center px-4 py-3 border-b bg-gray-50">
-        <h3 className="font-bold text-gray-800 text-sm">Node Properties</h3>
-        <button onClick={closePanel} className="text-gray-400 hover:text-gray-700 font-bold">&times;</button>
+    <aside className="w-full sm:w-[380px] bg-white border-l border-gray-200 shadow-xl h-full flex flex-col absolute right-0 top-0 z-20" aria-label="Step settings">
+      <div className="px-5 pt-4 pb-3 border-b border-gray-100">
+        <div className="flex items-center gap-3">
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${type.tile}`}><Icon name={selectedNode.type} className="w-5 h-5" /></div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{type.label}</div>
+            <input type="text" value={data.label || ''} onChange={(e) => onChange('label', e.target.value)} aria-label="Step name"
+              placeholder="Name this step"
+              className="w-full text-base font-semibold text-gray-900 bg-transparent border-0 border-b border-transparent hover:border-gray-200 focus:border-indigo-500 focus:outline-none px-0 py-0.5" />
+          </div>
+          <button onClick={() => deleteNode(selectedNode.id)} title="Delete step" aria-label="Delete step" className="p-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50"><Icon name="trash" /></button>
+          <button onClick={closePanel} title="Close" aria-label="Close settings" className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"><Icon name="close" /></button>
+        </div>
+        <p className="text-xs text-gray-500 mt-2">{type.hint}.</p>
       </div>
 
-      <div className="p-4 flex-1 overflow-y-auto space-y-5">
+      <div className="flex-1 overflow-y-auto">
 
-        {/* Common: Label */}
-        <div>
-          <label className="block text-xs font-bold text-gray-700 mb-1">Node Name</label>
-          <input
-            type="text" value={data.label || ''} onChange={(e) => onChange('label', e.target.value)}
-            className="w-full text-sm border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500 border bg-white"
-          />
-        </div>
-
-        {/* 1. TASK PROPERTIES */}
+        {/* 1. APPROVAL STEP */}
         {selectedNode.type === 'task' && (
           <>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Who Should Complete This Step?</label>
+            <Section icon="office" title="Who reviews" summary={describeAssignee({ ...data, officesList, rolesList, staffList, departments }).text}>
               {!showAdvanced ? (
-                <div className="bg-indigo-50/60 border border-indigo-100 rounded p-2.5 space-y-2">
-                  <select
-                    value={data.assignmentStrategy === 'office' ? (data.officeId || '') : ''}
-                    onChange={(e) => {
-                      onChange('assignmentStrategy', 'office');
-                      onChange('officeId', e.target.value || null);
-                      // A position belongs to one office, so a new office starts from "any officer"
-                      onChange('officePosition', 'officer');
-                      onChange('positionId', null);
-                      onChange('assignee', null); onChange('roleId', null); onChange('routingType', null); onChange('targetDepartmentId', null);
-                    }}
-                    className="w-full text-sm border-gray-300 rounded p-2 border bg-white shadow-sm"
-                  >
-                    <option value="">-- Select office --</option>
-                    {officesList.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                  </select>
+                <>
+                  <div>
+                    <Label>Office</Label>
+                    <select
+                      value={data.assignmentStrategy === 'office' ? (data.officeId || '') : ''}
+                      onChange={(e) => {
+                        onChange('assignmentStrategy', 'office');
+                        onChange('officeId', e.target.value || null);
+                        // A position belongs to one office, so a new office starts from "any officer"
+                        onChange('officePosition', 'officer');
+                        onChange('positionId', null);
+                        onChange('assignee', null); onChange('roleId', null); onChange('routingType', null); onChange('targetDepartmentId', null);
+                      }}
+                      className={fieldClass}
+                    >
+                      <option value="">Choose an office</option>
+                      {officesList.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                  </div>
                   {data.assignmentStrategy === 'office' && data.officeId && (() => {
                     const office = officesList.find(o => o.id === parseInt(data.officeId));
                     const value = data.officePosition === 'position' ? `pos:${data.positionId || ''}` : (data.officePosition || 'officer');
+                    const options = [
+                      { value: 'officer', title: 'Any officer', text: 'Shared queue; whoever is free claims it.' },
+                      { value: 'head', title: 'Head of office', text: 'For sign-offs; goes to whoever covers when they are away.' },
+                      ...(office?.positions || []).map(p => ({ value: `pos:${p.id}`, title: p.name, text: 'Only holders of this position can claim it.' })),
+                    ];
                     return (
-                      <select
-                        value={value}
-                        aria-label="Who in the office"
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          if (v.startsWith('pos:')) { onChange('officePosition', 'position'); onChange('positionId', v.slice(4)); }
-                          else { onChange('officePosition', v); onChange('positionId', null); }
-                        }}
-                        className="w-full text-sm border-gray-300 rounded p-2 border bg-white shadow-sm"
-                      >
-                        <option value="officer">Any officer (shared queue)</option>
-                        <option value="head">Head of office</option>
-                        {(office?.positions || []).length > 0 && (
-                          <optgroup label="A position in this office">
-                            {office.positions.map(p => <option key={p.id} value={`pos:${p.id}`}>{p.name}</option>)}
-                          </optgroup>
-                        )}
-                      </select>
+                      <div>
+                        <Label>Who in the office</Label>
+                        <div className="space-y-1.5" role="radiogroup" aria-label="Who in the office">
+                          {options.map(o => (
+                            <label key={o.value} className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer ${value === o.value ? 'border-indigo-400 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                              <input type="radio" name="who-in-office" className="mt-0.5 text-indigo-600 focus:ring-indigo-500" checked={value === o.value}
+                                onChange={() => {
+                                  if (o.value.startsWith('pos:')) { onChange('officePosition', 'position'); onChange('positionId', o.value.slice(4)); }
+                                  else { onChange('officePosition', o.value); onChange('positionId', null); }
+                                }} />
+                              <span>
+                                <span className="block text-sm font-medium text-gray-900">{o.title}</span>
+                                <span className="block text-xs text-gray-500">{o.text}</span>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
                     );
                   })()}
-                  <p className="text-[10px] text-indigo-700">
-                    {officesList.length === 0
-                      ? 'No offices yet. Create them on the Offices page.'
-                      : data.officePosition === 'head'
-                        ? 'Goes to the head of the office, or to whoever covers for them.'
-                        : data.officePosition === 'position'
-                          ? 'Goes to whoever holds this position; they claim it from the office queue. Late steps go to the position it reports to, then the head.'
-                          : 'Goes to the office queue; any officer can claim it. Late steps escalate up the office to the head.'}
-                  </p>
-                  <button type="button" onClick={() => setShowAdvanced(true)} className="text-[10px] text-gray-500 underline">Advanced: a specific person or role</button>
-                </div>
+                  {officesList.length === 0 && <p className="text-xs text-amber-700">No offices yet. Create them on the Offices &amp; Positions page.</p>}
+                  <button type="button" onClick={() => setShowAdvanced(true)} className="text-xs font-medium text-gray-500 hover:text-indigo-700">Advanced: a specific person or role instead</button>
+                </>
               ) : (
-              <>
-              <select
-                value={getSmartDropdownValue()}
-                onChange={(e) => handleSmartDropdownChange(e.target.value)}
-                className="w-full text-sm border-gray-300 rounded p-2 border bg-white mb-2 shadow-sm"
-              >
-                <option value="">-- Select Assignee --</option>
-                
-                <optgroup label="Applicant's Department (Dynamic)">
-                  {rolesList.filter(r => r.id !== 1 && staffList.some(s => s.role_id === r.id)).map(r => (
-                    <option key={`dyn-${r.id}`} value={`ROLE:INITIATOR_DEPT:${r.id}`}>Applicant's {r.name}</option>
-                  ))}
-                </optgroup>
-
-                {departments.map(d => {
-                  const validCombos = rolesList.filter(r =>
-                    r.id !== 1 &&
-                    staffList.some(s => s.role_id === r.id && s.department_id === d.id)
-                  );
-                  if (validCombos.length === 0) return null;
-                  return (
-                    <optgroup key={`dept-${d.id}`} label={d.name}>
-                      {validCombos.map(r => (
-                        <option key={`spec-${r.id}-${d.id}`} value={`ROLE:SPECIFIC:${r.id}:${d.id}`}>{d.name} — {r.name}</option>
-                      ))}
-                    </optgroup>
-                  );
-                })}
-
-                <optgroup label="Global Roles (Any Department)">
-                  {rolesList.filter(r => r.id !== 1 && staffList.some(s => s.role_id === r.id)).map(r => (
-                    <option key={`any-${r.id}`} value={`ROLE:ANY:${r.id}`}>Any {r.name}</option>
-                  ))}
-                </optgroup>
-
-                <optgroup label="Specific Person">
-                  {staffList.filter(s => s.role_id !== 1).map(s => (
-                    <option key={`user-${s.id}`} value={`USER:${s.id}`}>
-                      {s.name}{s.department_name ? ` (${s.department_name})` : ''}
-                    </option>
-                  ))}
-                </optgroup>
-              </select>
-              <button type="button" onClick={() => setShowAdvanced(false)} className="text-[10px] text-indigo-600 underline">Use an office instead</button>
-              </>
-              )}
-            </div>
-
-                  {/* ── Live matching users preview ───────────────────────────── */}
+                <>
+                  <div>
+                    <Label hint="For steps that don't belong to an office.">Person or role</Label>
+                    <select value={getSmartDropdownValue()} onChange={(e) => handleSmartDropdownChange(e.target.value)} className={fieldClass}>
+                      <option value="">Choose who reviews</option>
+                      <optgroup label="Applicant's department (decided per request)">
+                        {rolesList.filter(r => r.id !== 1 && staffList.some(s => s.role_id === r.id)).map(r => (
+                          <option key={`dyn-${r.id}`} value={`ROLE:INITIATOR_DEPT:${r.id}`}>Applicant's {r.name}</option>
+                        ))}
+                      </optgroup>
+                      {departments.map(d => {
+                        const validCombos = rolesList.filter(r => r.id !== 1 && staffList.some(s => s.role_id === r.id && s.department_id === d.id));
+                        if (validCombos.length === 0) return null;
+                        return (
+                          <optgroup key={`dept-${d.id}`} label={d.name}>
+                            {validCombos.map(r => <option key={`spec-${r.id}-${d.id}`} value={`ROLE:SPECIFIC:${r.id}:${d.id}`}>{d.name}: {r.name}</option>)}
+                          </optgroup>
+                        );
+                      })}
+                      <optgroup label="Any department">
+                        {rolesList.filter(r => r.id !== 1 && staffList.some(s => s.role_id === r.id)).map(r => (
+                          <option key={`any-${r.id}`} value={`ROLE:ANY:${r.id}`}>Any {r.name}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="A specific person">
+                        {staffList.filter(s => s.role_id !== 1).map(s => (
+                          <option key={`user-${s.id}`} value={`USER:${s.id}`}>{s.name}{s.department_name ? ` (${s.department_name})` : ''}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  </div>
                   {data.roleId && (
-                    <div className="mt-2 pt-2 border-t border-blue-200">
-                      <p className="text-[10px] font-bold text-blue-700 uppercase tracking-wider mb-1.5">
-                        👥 Who Will Receive This Step
-                        {data.routingType === 'INITIATOR_DEPT' && ' (all in role)'}
-                      </p>
+                    <div>
+                      <Label>Who will receive it{data.routingType === 'INITIATOR_DEPT' ? ' (everyone in the role)' : ''}</Label>
                       {rolePreviewLoading ? (
-                        <p className="text-[10px] text-blue-400 italic">Loading...</p>
+                        <p className="text-xs text-gray-400">Loading...</p>
                       ) : rolePreviewUsers.length === 0 ? (
-                        <div className="bg-red-50 border border-red-200 rounded p-2">
-                          <p className="text-[10px] font-bold text-red-700">⚠️ No users found!</p>
-                          <p className="text-[9px] text-red-600 mt-0.5">Nobody in the system matches this role{data.routingType === 'SPECIFIC' && data.targetDepartmentId ? ' + department' : ''} combination. This step will be unclaimable.</p>
-                        </div>
+                        <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2">Nobody matches this yet, so the step could not be picked up.</p>
                       ) : (
-                        <ul className="space-y-1">
+                        <ul className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
                           {rolePreviewUsers.map(u => (
-                            <li key={u.id} className="flex items-center justify-between bg-white border border-blue-100 rounded px-2 py-1">
-                              <div>
-                                <span className="text-[11px] font-semibold text-gray-800">{u.name}</span>
-                                {u.department_name && <span className="text-[9px] text-gray-400 ml-1">· {u.department_name}</span>}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-[9px] text-gray-400 truncate max-w-[80px] hidden md:inline">{u.email}</span>
-                                {data.routingType === 'SPECIFIC' && (
-                                  <button
-                                    onClick={() => {
-                                      onChange('assignmentStrategy', 'specific_user');
-                                      onChange('assignee', u.id);
-                                      onChange('roleId', null);
-                                      onChange('routingType', null);
-                                      onChange('targetDepartmentId', null);
-                                    }}
-                                    className="text-[9px] bg-blue-600 text-white px-2 py-0.5 rounded font-bold hover:bg-blue-700 transition-colors"
-                                  >
-                                    Assign User
-                                  </button>
-                                )}
-                              </div>
+                            <li key={u.id} className="flex items-center justify-between px-3 py-1.5">
+                              <span className="text-sm text-gray-800">{u.name}{u.department_name && <span className="text-xs text-gray-400"> · {u.department_name}</span>}</span>
+                              {data.routingType === 'SPECIFIC' && (
+                                <button onClick={() => { onChange('assignmentStrategy', 'specific_user'); onChange('assignee', u.id); onChange('roleId', null); onChange('routingType', null); onChange('targetDepartmentId', null); }}
+                                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-800">Only them</button>
+                              )}
                             </li>
                           ))}
                         </ul>
                       )}
                     </div>
                   )}
+                  <button type="button" onClick={() => setShowAdvanced(false)} className="text-xs font-medium text-indigo-600 hover:text-indigo-800">Use an office instead</button>
+                </>
+              )}
+            </Section>
 
-            <div className="bg-red-50 p-3 rounded border border-red-100">
-              <label className="block text-[10px] uppercase tracking-wider font-bold text-red-800 mb-1 border-b border-red-200 pb-1">Deadline &amp; Alerts (Hours)</label>
-              <p className="text-[10px] text-red-500 mb-2">Optional. The deadline starts when this step is assigned.</p>
-              <div className="space-y-2">
-                {[
-                  { field: 'escalationHours', label: '🚨 Deadline', hint: 'Escalate if not done within', strong: true },
-                  { field: 'reminderHours', label: '🔔 Reminder', hint: 'hrs before the deadline' },
-                  { field: 'warningHours', label: '⚠️ Final warning', hint: 'hrs before the deadline' },
-                ].map(({ field, label, hint, strong }) => (
-                  <div key={field} className="flex justify-between items-center gap-2">
+            <Section icon="delay" title="Deadline" summary={deadlineHours ? `${formatDuration(deadlineHours)}${data.workingDaysOnly ? ', working days' : ''}` : 'None'}>
+              <div>
+                <Label hint="Counted from when the step reaches the reviewer.">Complete within</Label>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {DEADLINE_PRESETS.map(h => (
+                    <button key={h} type="button" onClick={() => setDeadline(h)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${deadlineHours === h ? 'bg-indigo-600 border-indigo-600 text-white' : 'border-gray-300 text-gray-700 hover:border-indigo-400'}`}>
+                      {formatDuration(h)}
+                    </button>
+                  ))}
+                  <button type="button" onClick={() => setDeadline('')}
+                    className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${!deadlineHours ? 'bg-gray-800 border-gray-800 text-white' : 'border-gray-300 text-gray-700 hover:border-gray-500'}`}>
+                    No deadline
+                  </button>
+                </div>
+                <DurationInput key={`dl-${selectedNode.id}`} hours={deadlineHours} onChange={setDeadline} ariaLabel="Deadline" />
+              </div>
+              {deadlineHours > 0 && (
+                <>
+                  <Toggle checked={!!data.workingDaysOnly} onChange={(v) => onChange('workingDaysOnly', v)}
+                    label="Count working days only" description="Saturdays and Sundays don't count towards the deadline." />
+                  <div className="grid grid-cols-1 gap-3">
                     <div>
-                      <span className={`text-xs font-medium ${strong ? 'text-red-700 font-bold' : 'text-gray-700'}`}>{label}</span>
-                      <p className="text-[9px] text-gray-400">{hint}</p>
+                      <Label hint="A gentle nudge to the reviewer, this long before the deadline.">Reminder</Label>
+                      <DurationInput key={`rm-${selectedNode.id}`} hours={data.reminderHours} onChange={(h) => onChange('reminderHours', h)} ariaLabel="Reminder" />
                     </div>
-                    <input
-                      type="number" min="0" step="0.5"
-                      value={(field === 'escalationHours' ? (data.escalationHours || data.slaHours) : data[field]) || ''}
-                      onChange={e => { const v = Math.max(0, parseFloat(e.target.value) || 0); onChange(field, v || ''); }}
-                      className={`w-20 text-xs p-1.5 border rounded text-center ${strong ? 'border-red-400 font-bold' : ''}`}
-                      placeholder="hrs"
-                    />
+                    <div>
+                      <Label hint="A last warning, this long before the deadline.">Final warning</Label>
+                      <DurationInput key={`wn-${selectedNode.id}`} hours={data.warningHours} onChange={(h) => onChange('warningHours', h)} ariaLabel="Final warning" />
+                    </div>
                   </div>
-                ))}
-                {parseFloat(data.escalationHours) > 0 && (
-                  <div className="pt-2 mt-1 border-t border-red-100">
-                    <label className="block text-[10px] font-bold text-red-700 uppercase tracking-wider mb-1">Escalate To</label>
-                    <select
-                      value={data.escalationUserId || ''} onChange={(e) => onChange('escalationUserId', e.target.value)}
-                      className="w-full text-xs border border-red-300 rounded p-1.5 bg-red-50"
-                    >
-                      <option value="">Head of the office (automatic)</option>
+                  <div>
+                    <Label hint="Late work moves up the office automatically: to the position this one reports to, then the head.">If it runs late</Label>
+                    <select value={data.escalationUserId || ''} onChange={(e) => onChange('escalationUserId', e.target.value)} className={fieldClass}>
+                      <option value="">Escalate up the office (automatic)</option>
                       {staffList.filter(s => s.role_id !== 1).map(s => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}{s.department_name ? ` (${s.department_name})` : ''}
-                        </option>
+                        <option key={s.id} value={s.id}>Hand to {s.name}{s.department_name ? ` (${s.department_name})` : ''}</option>
                       ))}
                     </select>
                   </div>
+                </>
+              )}
+            </Section>
+
+            <Section icon="checklist" title="Before approving" summary={[checklist.length && `${checklist.length} check${checklist.length > 1 ? 's' : ''}`, outcomes.length && `${outcomes.length} outcomes`].filter(Boolean).join(', ') || 'Nothing required'}>
+              <div>
+                <Label hint="The reviewer ticks each item before they can sign. Their confirmations are saved with the signature.">Required checks</Label>
+                {checklist.length > 0 && (
+                  <ol className="mb-2 space-y-1.5">
+                    {checklist.map((item, idx) => (
+                      <li key={`${idx}-${item}`} className="group flex items-center gap-2 text-sm bg-gray-50 border border-gray-200 rounded-lg pl-3 pr-1 py-1.5">
+                        <span className="w-4 h-4 rounded border border-gray-300 bg-white shrink-0" aria-hidden="true" />
+                        <span className="flex-1 text-gray-800">{item}</span>
+                        <button type="button" onClick={() => moveChecklistItem(idx, -1)} disabled={idx === 0} aria-label="Move up" className="p-1 text-gray-400 hover:text-gray-700 disabled:opacity-30">↑</button>
+                        <button type="button" onClick={() => moveChecklistItem(idx, 1)} disabled={idx === checklist.length - 1} aria-label="Move down" className="p-1 text-gray-400 hover:text-gray-700 disabled:opacity-30">↓</button>
+                        <button type="button" onClick={() => removeChecklistItem(idx)} aria-label={`Remove ${item}`} className="p-1 text-gray-400 hover:text-red-600"><Icon name="close" className="w-3.5 h-3.5" /></button>
+                      </li>
+                    ))}
+                  </ol>
                 )}
+                <div className="flex gap-2">
+                  <input type="text" value={newCheckItem} onChange={e => setNewCheckItem(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChecklistItem(); } }}
+                    className={fieldClass} placeholder="e.g. Fee receipt is attached" />
+                  <button type="button" onClick={addChecklistItem} className="px-3 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700">Add</button>
+                </div>
               </div>
-            </div>
 
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Checklist Items</label>
-              <ul className="mb-2 space-y-1">
-                {(data.checklist || []).map((item, idx) => (
-                  <li key={idx} className="flex justify-between text-xs bg-gray-50 p-1.5 rounded border border-gray-200">
-                    <span className="truncate">{item}</span>
-                    <button onClick={() => removeChecklistItem(idx)} className="text-red-500 hover:text-red-700 font-bold px-1">&times;</button>
-                  </li>
-                ))}
-              </ul>
-              <div className="flex gap-1">
-                <input type="text" value={newCheckItem} onChange={e => setNewCheckItem(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addChecklistItem()} className="flex-1 text-xs border rounded p-1.5" placeholder="Add mandatory step..." />
-                <button onClick={addChecklistItem} className="bg-blue-600 text-white px-2 rounded text-xs">+</button>
+              <div>
+                <Label hint="The reviewer picks one when approving. A later Branch step can route on it.">Decision outcomes</Label>
+                <ChipsInput values={outcomes} onChange={(vals) => onChange('allowedTags', vals.join(', '))}
+                  placeholder="e.g. Undergraduate, Postgraduate" suggestions={outcomes.length ? [] : ['Complete', 'Incomplete']} />
               </div>
-            </div>
+            </Section>
 
-            <div className="bg-indigo-50 p-3 rounded border border-indigo-200">
-              <label className="block text-[10px] uppercase tracking-wider font-bold text-indigo-800 mb-1">Allowed Tags</label>
-              <input
-                type="text"
-                value={data.allowedTags || ''}
-                onChange={(e) => onChange('allowedTags', e.target.value)}
-                className="w-full text-xs border-indigo-200 bg-white rounded p-1.5 focus:ring-indigo-400 border"
-                placeholder="e.g. accepted, rejected"
-              />
-              <p className="text-[10px] text-indigo-600 mt-1">Comma-separated. Staff will see these as a dropdown when tagging this document.</p>
-            </div>
-
-            <div className="bg-gray-50 p-3 rounded border border-gray-200 mt-3">
-              <label className="block text-[10px] uppercase font-bold text-gray-600 mb-2">
-                Allowed Actions at This Stage
-              </label>
-              {['approve', 'reject', 'attach_documents'].map(action => (
-                <label key={action} className="flex items-center gap-2 py-1 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={(data.allowedActions || ['approve','reject']).includes(action)}
-                    onChange={(e) => {
-                      const current = data.allowedActions || ['approve', 'reject'];
-                      const updated = e.target.checked
-                        ? [...current, action]
-                        : current.filter(a => a !== action);
-                      onChange('allowedActions', updated);
-                    }}
-                    className="text-indigo-600 rounded focus:ring-indigo-500"
-                  />
-                  <span className="text-xs text-gray-700 capitalize">{action.replace(/_/g, ' ')}</span>
-                </label>
-              ))}
-            </div>
+            <Section icon="settings" title="Reviewer can" summary={[actions.includes('approve') && 'Approve', actions.includes('reject') && 'Send back', actions.includes('attach_documents') && 'Attach'].filter(Boolean).join(', ') || 'Nothing'} defaultOpen={false}>
+              <Toggle checked={actions.includes('approve')} onChange={(v) => toggleAction('approve', v)} label="Approve and sign" description="Moves the request on to the next step." />
+              <Toggle checked={actions.includes('reject')} onChange={(v) => toggleAction('reject', v)} label="Send back to the applicant" description="With a reason; the applicant can fix it and resubmit." />
+              <Toggle checked={actions.includes('attach_documents')} onChange={(v) => toggleAction('attach_documents', v)} label="Attach files" description="For example a receipt or a signed letter." />
+            </Section>
           </>
         )}
 
-        {/* 2. CONDITION PROPERTIES */}
+        {/* 2. BRANCH ON OUTCOME */}
         {selectedNode.type === 'condition' && (
-          <div>
-            <label className="block text-xs font-bold text-amber-800 mb-1">If Tag Equals</label>
-            <input
-              type="text" value={data.conditionValue || ''} onChange={(e) => onChange('conditionValue', e.target.value)}
-              className="w-full text-sm border-amber-300 bg-amber-50 rounded p-2 focus:ring-amber-500 focus:border-amber-500 border" placeholder="e.g. Finance"
-            />
-            <p className="text-[10px] text-gray-500 mt-1">Routes to TRUE if it matches perfectly, otherwise FALSE.</p>
-          </div>
+          <Section icon="condition" title="Route by outcome">
+            <div>
+              <Label hint="Follows Yes when the outcome chosen earlier is one of these; otherwise No.">Go down Yes when the outcome is</Label>
+              <ChipsInput tone="amber" values={listOf(data.conditionValue)} onChange={(vals) => onChange('conditionValue', vals.join(', '))}
+                placeholder={knownOutcomes.length ? 'Pick below or type one' : 'Type an outcome'} suggestions={knownOutcomes} />
+              {knownOutcomes.length === 0 && (
+                <p className="text-xs text-amber-700 mt-2">Tip: give an approval step some decision outcomes first, then pick them here.</p>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-lg bg-green-50 border border-green-200 p-2.5"><span className="font-semibold text-green-800">Yes</span><span className="block text-green-700 mt-0.5">{listOf(data.conditionValue).join(' or ') || 'Not set'}</span></div>
+              <div className="rounded-lg bg-gray-50 border border-gray-200 p-2.5"><span className="font-semibold text-gray-700">No</span><span className="block text-gray-500 mt-0.5">Any other outcome</span></div>
+            </div>
+          </Section>
         )}
 
-        {/* 3. EMAIL PROPERTIES */}
+        {/* 3. EMAIL */}
         {selectedNode.type === 'email' && (
-          <EmailProperties data={data} onChange={onChange} />
+          <Section icon="email" title="Message"><EmailProperties data={data} onChange={onChange} /></Section>
         )}
 
-        {/* 4. DELAY PROPERTIES */}
+        {/* 4. WAIT */}
         {selectedNode.type === 'delay' && (
-          <div>
-            <label className="block text-xs font-bold text-purple-800 mb-1">Delay Duration (Hours)</label>
-            <input type="number" min="0" value={data.delayHours || ''} onChange={e => onChange('delayHours', e.target.value)} className="w-full text-sm border-purple-300 bg-purple-50 rounded p-2 focus:ring-purple-500 border" placeholder="e.g. 48" />
-            <p className="text-[10px] text-gray-500 mt-1">Flow auto-resumes after this interval.</p>
-          </div>
+          <Section icon="delay" title="How long to wait">
+            <div>
+              <Label hint="The request continues on its own afterwards.">Wait for</Label>
+              <DurationInput key={`delay-${selectedNode.id}`} hours={data.delayHours} onChange={(h) => onChange('delayHours', h)} ariaLabel="Wait" />
+            </div>
+          </Section>
         )}
 
-        {/* 5. PARALLEL PROPERTIES */}
-        {selectedNode.type === 'parallel' && (
-          <div className="bg-orange-50 p-3 rounded border border-orange-200 text-xs text-orange-800">
-            Connect multiple outputs to this node. The document will route to all connected paths simultaneously.
-          </div>
+        {/* 5. PARALLEL / 6. MERGE */}
+        {(selectedNode.type === 'parallel' || selectedNode.type === 'join') && (
+          <Section icon={selectedNode.type} title="How it works">
+            <p className="text-sm text-gray-600">
+              {selectedNode.type === 'parallel'
+                ? 'Connect this to two or more steps. They all start at the same time, for example Library, Finance and Dean of Students clearing a student together.'
+                : 'Connect every parallel branch into this step. The request waits here until all of them are approved, then continues.'}
+            </p>
+          </Section>
         )}
 
-        {/* 7. JOIN PROPERTIES */}
-        {selectedNode.type === 'join' && (
-          <div className="bg-teal-50 p-3 rounded border border-teal-200 text-xs text-teal-800">
-            Connect multiple branches into this node. The workflow will wait until all incoming parallel branches reach this point before continuing.
-          </div>
-        )}
-
-        {/* 6. SPAWN PROPERTIES */}
+        {/* 7. START OTHER SERVICES */}
         {selectedNode.type === 'spawn' && (
-          <div>
-            <label className="block text-xs font-bold text-pink-800 mb-1">Workflows to Spawn</label>
-            <div className="max-h-32 overflow-y-auto border border-pink-200 rounded text-sm bg-white p-1">
+          <Section icon="spawn" title="Services to start">
+            <p className="text-xs text-gray-500">Each one opens as a new request for the same applicant.</p>
+            <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
               {savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0)).map(wf => {
-                const isSelected = (data.spawnIds || '').split(',').includes(wf.id.toString());
+                const isSelected = listOf(data.spawnIds).includes(wf.id.toString());
                 return (
-                  <label key={wf.id} className="flex items-center gap-2 p-1.5 hover:bg-pink-50 cursor-pointer">
-                    <input 
-                      type="checkbox" 
-                      checked={isSelected}
+                  <label key={wf.id} className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 cursor-pointer">
+                    <input type="checkbox" checked={isSelected}
                       onChange={(e) => {
-                        let ids = (data.spawnIds || '').split(',').filter(Boolean);
+                        let ids = listOf(data.spawnIds);
                         if (e.target.checked) ids.push(wf.id.toString());
                         else ids = ids.filter(id => id !== wf.id.toString());
                         onChange('spawnIds', ids.join(','));
                       }}
-                      className="text-pink-600 focus:ring-pink-500 rounded"
-                    />
-                    <span className="truncate text-xs text-gray-700" title={wf.name}>{wf.name}</span>
+                      className="text-indigo-600 focus:ring-indigo-500 rounded" />
+                    <span className="truncate text-sm text-gray-800" title={wf.name}>{wf.name}</span>
                   </label>
                 );
               })}
             </div>
-            <p className="text-[10px] text-gray-500 mt-1">Spawns new detached document workflows automatically.</p>
-          </div>
+          </Section>
         )}
-
       </div>
-    </div>
+    </aside>
   );
 };
 
 
+/** A short checkbox list for the service settings dialog */
+const CheckList = ({ options, selected, onToggle, empty }) => (
+  <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+    {options.length === 0 && <p className="text-sm text-gray-500 px-3 py-2">{empty}</p>}
+    {options.map(o => (
+      <label key={o.id} className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 cursor-pointer">
+        <input type="checkbox" checked={selected.includes(String(o.id))} onChange={(e) => onToggle(String(o.id), e.target.checked)} className="rounded text-indigo-600 focus:ring-indigo-500" />
+        <span className="text-sm text-gray-800">{o.name}</span>
+      </label>
+    ))}
+  </div>
+);
+
 // ==========================================
-// 3. LEFT PALETTE SIDEBAR
+// 3. LEFT PALETTE
 // ==========================================
-const Sidebar = () => {
-  const onDragStart = (event, nodeType, defaultLabel) => {
+const PALETTE = [
+  { group: 'Review', types: ['task'] },
+  { group: 'Routing', types: ['condition', 'parallel', 'join'] },
+  { group: 'Automation', types: ['email', 'delay', 'spawn'] },
+];
+
+const Sidebar = ({ onAdd }) => {
+  const onDragStart = (event, nodeType) => {
     event.dataTransfer.setData('application/reactflow', nodeType);
-    event.dataTransfer.setData('application/reactflow-label', defaultLabel);
+    event.dataTransfer.setData('application/reactflow-label', STEP_TYPES[nodeType].label);
     event.dataTransfer.effectAllowed = 'move';
   };
 
   return (
-    <div className="w-56 bg-gray-50 border-r border-gray-200 h-full flex flex-col pt-1">
-      <div className="p-3 border-b border-gray-200 font-bold text-xs uppercase tracking-wider text-gray-500">Node Palette</div>
-      <div className="p-3 space-y-3 overflow-y-auto">
-        <div className="text-[10px] font-bold text-gray-400 uppercase">Interactive</div>
-        <div className="bg-white border hover:border-blue-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'task', 'Approval Step')} draggable>
-          <span className="text-blue-500">🟦</span> Approval Step
-        </div>
-
-        <div className="text-[10px] font-bold text-gray-400 uppercase mt-4">Logic</div>
-        <div className="bg-white border hover:border-amber-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'condition', 'If Tag Match')} draggable>
-          <span className="text-amber-500">🔀</span> Condition (If/Else)
-        </div>
-        <div className="bg-white border hover:border-orange-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'parallel', 'Parallel Split')} draggable>
-          <span className="text-orange-500">⑂</span> Parallel Split
-        </div>
-        <div className="bg-white border hover:border-teal-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'join', 'Merge Paths')} draggable>
-          <span className="text-teal-500">⛙</span> Merge Gate (Join)
-        </div>
-
-        <div className="text-[10px] font-bold text-gray-400 uppercase mt-4">Automation</div>
-        <div className="bg-white border hover:border-green-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'email', 'Send Email')} draggable>
-          <span className="text-green-500">📧</span> Email Notify
-        </div>
-        <div className="bg-white border hover:border-purple-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'delay', 'Wait Timer')} draggable>
-          <span className="text-purple-500">⏳</span> Delay Timer
-        </div>
-        <div className="bg-white border hover:border-pink-400 p-2 text-xs rounded cursor-grab flex items-center gap-2 shadow-sm" onDragStart={(e) => onDragStart(e, 'spawn', 'Spawn Flows')} draggable>
-          <span className="text-pink-500">🚀</span> Spawn Flows
-        </div>
+    <div className="w-60 bg-white border-r border-gray-200 h-full hidden md:flex flex-col">
+      <div className="px-4 pt-4 pb-2">
+        <div className="text-sm font-semibold text-gray-900">Add a step</div>
+        <div className="text-xs text-gray-500">Drag onto the canvas, or click to add.</div>
       </div>
-      <div className="p-3 mt-auto border-t border-gray-200 text-[10px] text-gray-400">
-        Drag nodes onto the canvas. Press <kbd className="bg-gray-200 px-1 py-0.5 rounded text-gray-600">Del</kbd> to remove.
-      </div>
-    </div>
-  );
-};
-
-
-// ==========================================
-// 3a. REUSABLE UI COMPONENTS
-// ==========================================
-
-const MultiSelectDropdown = ({ label, options, selectedIds, onChange, title }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setIsOpen(false);
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const selectedCount = selectedIds ? selectedIds.split(',').filter(Boolean).length : 0;
-
-  return (
-    <div className="relative group hidden sm:flex items-center gap-2" ref={dropdownRef} title={title}>
-      <span className="text-xs font-bold text-gray-500">{label}:</span>
-      <div className="relative">
-        <button 
-          onClick={() => setIsOpen(!isOpen)}
-          className="px-3 py-1.5 border border-gray-300 rounded text-xs bg-white text-gray-700 hover:border-blue-400 focus:outline-none focus:border-blue-500 min-w-[120px] text-left flex justify-between items-center"
-        >
-          <span>{selectedCount === 0 ? 'None Selected' : `${selectedCount} Selected`}</span>
-          <span className="ml-2 text-[10px]">▼</span>
-        </button>
-        
-        {isOpen && (
-          <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 shadow-xl rounded-md z-50 max-h-60 overflow-y-auto">
-            <div className="p-2 space-y-1">
-              {options.length === 0 && <div className="text-xs text-gray-500 p-1">No workflows available</div>}
-              {options.map(opt => {
-                const isChecked = selectedIds ? selectedIds.split(',').includes(opt.id.toString()) : false;
-                return (
-                  <label key={opt.id} className="flex items-start gap-2 p-1.5 hover:bg-blue-50 rounded cursor-pointer">
-                    <input 
-                      type="checkbox" 
-                      checked={isChecked}
-                      onChange={(e) => {
-                        let ids = selectedIds ? selectedIds.split(',').filter(Boolean) : [];
-                        if (e.target.checked) ids.push(opt.id.toString());
-                        else ids = ids.filter(id => id !== opt.id.toString());
-                        onChange(ids.join(','));
-                      }}
-                      className="mt-0.5 rounded text-blue-600 focus:ring-blue-500 border-gray-300"
-                    />
-                    <div className="flex flex-col">
-                      <span className="text-xs font-medium text-gray-800 leading-tight">{opt.name}</span>
-                      <span className="text-[10px] text-gray-500">ID: {opt.id}</span>
-                    </div>
-                  </label>
-                );
-              })}
+      <div className="px-3 pb-3 space-y-4 overflow-y-auto">
+        {PALETTE.map(({ group, types }) => (
+          <div key={group}>
+            <div className="px-1 mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">{group}</div>
+            <div className="space-y-1.5">
+              {types.map((t) => (
+                <button key={t} type="button" draggable onDragStart={(e) => onDragStart(e, t)} onClick={() => onAdd(t)}
+                  className="w-full flex items-start gap-2.5 p-2 rounded-lg border border-gray-200 bg-white text-left hover:border-indigo-300 hover:shadow-sm cursor-grab active:cursor-grabbing">
+                  <span className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${STEP_TYPES[t].tile}`}><Icon name={t} /></span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-gray-900">{STEP_TYPES[t].label}</span>
+                    <span className="block text-[11px] text-gray-500 leading-snug">{STEP_TYPES[t].hint}</span>
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
-        )}
+        ))}
+      </div>
+      <div className="px-4 py-3 mt-auto border-t border-gray-100 text-[11px] text-gray-500 leading-relaxed">
+        Connect steps by dragging from the dot under a step to the next one. Select a step or line and press <kbd className="bg-gray-100 border border-gray-200 px-1 rounded">Delete</kbd> to remove it.
       </div>
     </div>
   );
 };
+
 
 // ==========================================
 // 4. MAIN BUILDER COMPONENT (INTERNAL)
 // ==========================================
-const WorkflowBuilderInner = () => {
+const WorkflowBuilderInner = ({ onExit }) => {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [workflowName, setWorkflowName] = useState('');
@@ -774,6 +836,7 @@ const WorkflowBuilderInner = () => {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isBrowserOpen, setIsBrowserOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [toast, setToast] = useState({ type: '', text: '' });
   const builderContainerRef = useRef(null);
 
@@ -788,7 +851,7 @@ const WorkflowBuilderInner = () => {
   };
 
   const reactFlowWrapper = useRef(null);
-  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { screenToFlowPosition, fitView, getViewport } = useReactFlow();
 
   const nodeTypes = useMemo(() => ({
     task: TaskNode,
@@ -902,6 +965,30 @@ const WorkflowBuilderInner = () => {
   }, [screenToFlowPosition, staffList, rolesList, departments, officesList]);
 
 
+  // Clicking a palette item adds the step in the middle of what is on screen
+  const addNodeAtCenter = useCallback((type) => {
+    const bounds = reactFlowWrapper.current?.getBoundingClientRect();
+    const { x, y, zoom } = getViewport();
+    const cx = bounds ? (bounds.width / 2 - x) / zoom : 200;
+    const cy = bounds ? (bounds.height / 3 - y) / zoom : 120;
+    const offset = (nodes.length % 5) * 20;
+    const newNode = {
+      id: `${type}_${Date.now()}`,
+      type,
+      position: { x: cx - 120 + offset, y: cy - 40 + offset },
+      selected: true,
+      data: { label: STEP_TYPES[type].label, staffList, rolesList, departments, officesList, ...(type === 'task' ? { assignmentStrategy: 'office', officePosition: 'officer' } : {}) },
+    };
+    setNodes((nds) => nds.map(n => ({ ...n, selected: false })).concat(newNode));
+    setSelectedNodeId(newNode.id);
+  }, [getViewport, nodes.length, staffList, rolesList, departments, officesList]);
+
+  const deleteNode = useCallback((id) => {
+    setNodes((nds) => nds.filter(n => n.id !== id));
+    setEdges((eds) => eds.filter(e => e.source !== id && e.target !== id));
+    setSelectedNodeId(null);
+  }, []);
+
   // Load/Save
   const handleLoadWorkflow = (e) => {
     const wfId = e.target.value;
@@ -943,18 +1030,22 @@ const WorkflowBuilderInner = () => {
         const hasOffice = n.data.assignmentStrategy === 'office' && !!n.data.officeId;
         if (!hasAssignee && !hasRole && !hasOffice) {
           errors.push(n.data.assignmentStrategy === 'office'
-            ? `Approval node "${n.data.label}" has no office selected.`
-            : `Approval node "${n.data.label}" has no assignee or role set.`);
+            ? `Approval step "${n.data.label}" has no office selected.`
+            : `Approval step "${n.data.label}" has no reviewer set.`);
         }
       }
-      if (n.type === 'email' && !n.data.recipient) errors.push(`Email node "${n.data.label}" has no recipient.`);
+      if (n.type === 'task' && n.data.assignmentStrategy === 'office' && n.data.officePosition === 'position' && !n.data.positionId) {
+        errors.push(`Approval step "${n.data.label}" needs a position.`);
+      }
+      if (n.type === 'condition' && listOf(n.data.conditionValue).length === 0) errors.push(`Branch "${n.data.label}" has no outcome to match.`);
+      if (n.type === 'email' && !n.data.recipient) errors.push(`Email step "${n.data.label}" has no recipient.`);
     });
     
     const connectedNodeIds = new Set();
     edges.forEach(e => { connectedNodeIds.add(e.source); connectedNodeIds.add(e.target); });
     if (nodes.length > 1) {
       nodes.forEach(n => {
-        if (!connectedNodeIds.has(n.id)) errors.push(`Node "${n.data.label}" is disconnected.`);
+        if (!connectedNodeIds.has(n.id)) errors.push(`Step "${n.data.label}" is not connected to anything.`);
       });
     }
 
@@ -1017,8 +1108,8 @@ const WorkflowBuilderInner = () => {
     const errors = getValidationErrors();
     if (errors.length > 0) {
       showConfirm(
-        '⛔ Publish Blocked: Validation Errors',
-        [...errors, "You must fix these errors before the workflow can be published. You can still save your progress as a draft."],
+        'Fix these before publishing',
+        [...errors, "You can still save your progress as a draft."],
         null,
         'Understood',
         'error'
@@ -1068,7 +1159,7 @@ const WorkflowBuilderInner = () => {
       const data = err.response?.data;
       if (data?.problems?.length) {
         // The server checks the workflow too; show exactly what needs fixing
-        showConfirm('⛔ Could not save workflow', data.problems, null, 'Understood', 'error');
+        showConfirm('Could not save the workflow', data.problems, null, 'Understood', 'error');
       } else {
         showToast('error', data?.message || 'Failed to save workflow. Please try again.');
       }
@@ -1104,13 +1195,13 @@ const WorkflowBuilderInner = () => {
     setClearanceWorkflowIds(''); 
     setSelectedWorkflowId(''); 
     setWorkflowName('');
-    showToast('success', 'Ready to create a new workflow!');
+    showToast('success', 'Started a new workflow.');
   };
 
   const handleClear = () => {
     showConfirm(
-      '🗑️ Clear Canvas',
-      ['This will remove all nodes and connections from the canvas. This cannot be undone.'],
+      'Clear the canvas?',
+      ['This removes every step and connection. It cannot be undone.'],
       () => { setNodes([]); setEdges([]); setSelectedNodeId(null); setAllowedSubmitters([]); setPrerequisiteWorkflowIds(''); setClearanceWorkflowIds(''); },
       'Clear Canvas',
       'danger'
@@ -1120,8 +1211,8 @@ const WorkflowBuilderInner = () => {
   const handleDeleteWorkflow = () => {
     if (!selectedWorkflowId) return;
     showConfirm(
-      '⚠️ Delete Workflow',
-      ['Are you sure you want to permanently delete this workflow?', 'This action cannot be undone. If it has historical records, it will be rejected by the server.'],
+      'Delete this workflow?',
+      ['It will be permanently deleted. This cannot be undone.', 'Workflows that already have requests cannot be deleted; unpublish them instead.'],
       async () => {
         try {
           await api.delete(`/workflows/${selectedWorkflowId}`);
@@ -1134,7 +1225,7 @@ const WorkflowBuilderInner = () => {
         } catch (err) {
           if (err.response && err.response.status === 400) {
             showConfirm(
-              '⛔ Deletion Rejected',
+              'This workflow cannot be deleted',
               [err.response.data.message || 'Cannot delete a workflow with active or historical records.', 'Please Unpublish (Take Down) the workflow instead to preserve analytics and history.'],
               null,
               'Understood',
@@ -1177,228 +1268,202 @@ const WorkflowBuilderInner = () => {
   const selectedNode = nodes.find(n => n.id === selectedNodeId);
 
 
+
+
+  const publishedOf = (wf) => {
+    if (!wf) return false;
+    const meta = (typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {})).metadata;
+    return meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
+  };
+  const loadedWorkflow = savedWorkflows.find(w => w.id === parseInt(selectedWorkflowId));
+  const isLoadedWorkflowPublished = publishedOf(loadedWorkflow);
+  const settingsCount = allowedSubmitters.length + listOf(prerequisiteWorkflowIds).length + listOf(clearanceWorkflowIds).length;
+  const otherWorkflows = savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0));
+  const danger = confirmModal.type === 'error' || confirmModal.type === 'danger';
+
+  const toggleIn = (csv, id, on) => {
+    const ids = listOf(csv).filter(x => x !== id);
+    return (on ? [...ids, id] : ids).join(',');
+  };
+
   return (
-    <div ref={builderContainerRef} className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-7rem)] min-h-[640px] w-full">
+    <div ref={builderContainerRef} className="fixed inset-0 z-40 bg-white flex flex-col">
       {/* Toast Notification */}
       {toast.text && (
-        <div className="fixed top-6 right-6 z-[80]">
-          <div className={`px-6 py-4 rounded-xl shadow-2xl border-l-4 font-semibold text-sm flex items-center gap-3 ${toast.type === 'error' ? 'bg-white border-red-500 text-red-700' : 'bg-white border-green-500 text-green-700'}`}>
-            <span className="text-xl">{toast.type === 'error' ? '🚨' : '✅'}</span>
+        <div className="fixed top-20 right-6 z-[80]" role="status">
+          <div className={`px-4 py-3 rounded-lg shadow-xl border text-sm font-medium flex items-center gap-2 bg-white ${toast.type === 'error' ? 'border-red-200 text-red-700' : 'border-green-200 text-green-700'}`}>
+            <span className={`w-2 h-2 rounded-full ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`} />
             {toast.text}
           </div>
         </div>
       )}
 
-      {/* Custom Confirm Modal */}
+      {/* Confirm / problems dialog */}
       {confirmModal.open && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4 animate-fade-in">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-gray-100 overflow-hidden">
-            <div className={`border-b px-6 py-4 ${confirmModal.type === 'error' || confirmModal.type === 'danger' ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
-              <h3 className={`font-black text-lg ${confirmModal.type === 'error' || confirmModal.type === 'danger' ? 'text-red-900' : 'text-gray-900'}`}>{confirmModal.title}</h3>
+        <div className="fixed inset-0 bg-gray-900/50 flex items-center justify-center z-[100] p-4">
+          <div role="dialog" aria-modal="true" aria-label={confirmModal.title} className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="px-6 pt-5 pb-3 flex items-start gap-3">
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${danger ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'}`}><Icon name="warning" className="w-5 h-5" /></div>
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">{confirmModal.title}</h3>
+                <ul className="mt-2 space-y-1.5">
+                  {confirmModal.messages.map((msg, i) => <li key={i} className="text-sm text-gray-600">{msg}</li>)}
+                </ul>
+              </div>
             </div>
-            <div className="px-6 py-4">
-              <ul className="space-y-2">
-                {confirmModal.messages.map((msg, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm text-gray-700">
-                    <span className={`mt-0.5 shrink-0 ${confirmModal.type === 'error' || confirmModal.type === 'danger' ? 'text-red-500' : 'text-amber-500'}`}>
-                      {confirmModal.type === 'error' || confirmModal.type === 'danger' ? '❌' : '⚠️'}
-                    </span>
-                    <span>{msg}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-2">
               {confirmModal.onConfirm && (
-                <button onClick={closeConfirm} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-200 transition-colors">Cancel</button>
+                <button onClick={closeConfirm} className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 bg-white border border-gray-300 hover:bg-gray-50">Cancel</button>
               )}
               <button
                 onClick={() => { if (confirmModal.onConfirm) confirmModal.onConfirm(); closeConfirm(); }}
-                className={`px-4 py-2 rounded-lg text-sm font-bold text-white transition-colors shadow-sm ${confirmModal.type === 'error' || confirmModal.type === 'danger' ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-500 hover:bg-amber-600'}`}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold text-white ${danger ? 'bg-red-600 hover:bg-red-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}
               >{confirmModal.confirmText}</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* WORKFLOW BROWSER MODAL */}
+      {/* WORKFLOW LIBRARY */}
       {isBrowserOpen && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[100] p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl border border-gray-100 overflow-hidden flex flex-col h-[80vh]">
-            <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+        <div className="fixed inset-0 bg-gray-900/50 flex items-center justify-center z-[100] p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setIsBrowserOpen(false); }}>
+          <div role="dialog" aria-modal="true" aria-label="Workflows" className="bg-white rounded-xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
               <div>
-                <h2 className="text-xl font-bold text-gray-900">Workflow Browser</h2>
-                <p className="text-sm text-gray-500 mt-1">Manage and open your existing workflows.</p>
+                <h2 className="text-lg font-semibold text-gray-900">Workflows</h2>
+                <p className="text-sm text-gray-500">Open a service to edit it, or start a new one.</p>
               </div>
-              <button onClick={() => setIsBrowserOpen(false)} className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 transition-colors">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => { setIsBrowserOpen(false); handleCreateNew(); }} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700"><Icon name="plus" /> New workflow</button>
+                <button onClick={() => setIsBrowserOpen(false)} aria-label="Close" className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"><Icon name="close" className="w-5 h-5" /></button>
+              </div>
             </div>
-            
-            <div className="flex-1 overflow-y-auto p-6 bg-gray-50/30">
-              {/* Drafts Section */}
-              <div className="mb-8">
-                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-amber-400"></span> Drafts (Unpublished)
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {savedWorkflows.filter(wf => {
-                    const meta = (typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {})).metadata;
-                    return meta?.isPublished === false || meta?.isComplete === false;
-                  }).map(wf => (
-                    <div key={wf.id} onClick={() => { handleLoadWorkflow({ target: { value: wf.id }}); setIsBrowserOpen(false); }} className="bg-white border border-gray-200 rounded-xl p-4 hover:border-amber-400 hover:shadow-md transition-all cursor-pointer group">
-                      <div className="flex justify-between items-start mb-2">
-                        <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-lg group-hover:scale-110 transition-transform">📝</div>
-                        <span className="text-[10px] font-bold px-2 py-1 bg-gray-100 text-gray-500 rounded uppercase">Draft</span>
+            <div className="flex-1 overflow-y-auto p-6 space-y-8">
+              {[{ title: 'Live services', live: true }, { title: 'Drafts', live: false }].map(({ title, live }) => {
+                const list = savedWorkflows.filter(wf => publishedOf(wf) === live);
+                return (
+                  <div key={title}>
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${live ? 'bg-emerald-500' : 'bg-gray-400'}`} /> {title} <span className="text-gray-400 font-normal normal-case">({list.length})</span>
+                    </h3>
+                    {list.length === 0 ? (
+                      <div className="py-6 text-center text-gray-400 text-sm border border-dashed border-gray-200 rounded-xl">{live ? 'Nothing published yet.' : 'No drafts.'}</div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {list.map(wf => {
+                          const flow = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {});
+                          const steps = (flow.nodes || []).filter(n => n.type === 'task').length;
+                          return (
+                            <button key={wf.id} onClick={() => { handleLoadWorkflow({ target: { value: wf.id } }); setIsBrowserOpen(false); }}
+                              className={`text-left bg-white border rounded-xl p-4 hover:shadow-md transition-shadow ${String(wf.id) === String(selectedWorkflowId) ? 'border-indigo-400 ring-1 ring-indigo-200' : 'border-gray-200 hover:border-indigo-300'}`}>
+                              <div className="flex justify-between items-start gap-2">
+                                <h4 className="font-semibold text-gray-900 leading-snug">{wf.name}</h4>
+                                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase shrink-0 ${live ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>{live ? 'Live' : 'Draft'}</span>
+                              </div>
+                              <p className="text-xs text-gray-500 mt-1">{steps} approval step{steps === 1 ? '' : 's'} · {(flow.nodes || []).length} in total</p>
+                            </button>
+                          );
+                        })}
                       </div>
-                      <h4 className="font-bold text-gray-900 truncate mb-1">{wf.name}</h4>
-                      <p className="text-xs text-gray-500">ID: {wf.id}</p>
-                    </div>
-                  ))}
-                  {savedWorkflows.filter(wf => {
-                    const meta = (typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {})).metadata;
-                    return meta?.isPublished === false || meta?.isComplete === false;
-                  }).length === 0 && (
-                    <div className="col-span-full py-6 text-center text-gray-400 text-sm border-2 border-dashed border-gray-200 rounded-xl">No drafts found.</div>
-                  )}
-                </div>
-              </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
-              {/* Published Section */}
+      {/* SERVICE SETTINGS */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 bg-gray-900/50 flex items-center justify-center z-[100] p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setIsSettingsOpen(false); }}>
+          <div role="dialog" aria-modal="true" aria-label="Service settings" className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
               <div>
-                <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span> Published & Active
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {savedWorkflows.filter(wf => {
-                    const meta = (typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : (wf.flow_structure || {})).metadata;
-                    return meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
-                  }).map(wf => (
-                    <div key={wf.id} onClick={() => { handleLoadWorkflow({ target: { value: wf.id }}); setIsBrowserOpen(false); }} className="bg-white border border-gray-200 rounded-xl p-4 hover:border-emerald-400 hover:shadow-md transition-all cursor-pointer group">
-                      <div className="flex justify-between items-start mb-2">
-                        <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg group-hover:scale-110 transition-transform">🚀</div>
-                        <span className="text-[10px] font-bold px-2 py-1 bg-emerald-50 text-emerald-600 rounded uppercase">Live</span>
-                      </div>
-                      <h4 className="font-bold text-gray-900 truncate mb-1">{wf.name}</h4>
-                      <p className="text-xs text-gray-500">ID: {wf.id}</p>
-                    </div>
-                  ))}
-                </div>
+                <h2 className="text-lg font-semibold text-gray-900">Service settings</h2>
+                <p className="text-sm text-gray-500">Who can request this service, and what they need first.</p>
               </div>
+              <button onClick={() => setIsSettingsOpen(false)} aria-label="Close" className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"><Icon name="close" className="w-5 h-5" /></button>
+            </div>
+            <div className="p-6 space-y-5 overflow-y-auto">
+              <div>
+                <Label hint="Leave empty to let everyone submit.">Who can submit</Label>
+                <CheckList options={rolesList} selected={allowedSubmitters.map(String)} empty="No account types."
+                  onToggle={(id, on) => setAllowedSubmitters(listOf(toggleIn(allowedSubmitters.join(','), id, on)).map(Number))} />
+              </div>
+              <div>
+                <Label hint="Services the applicant must have completed before they can submit this one.">Must be approved first</Label>
+                <CheckList options={otherWorkflows} selected={listOf(prerequisiteWorkflowIds)} empty="No other services yet."
+                  onToggle={(id, on) => setPrerequisiteWorkflowIds(toggleIn(prerequisiteWorkflowIds, id, on))} />
+              </div>
+              <div>
+                <Label hint="Opened automatically on submission; this request can't finish until they are approved.">Clearances opened alongside</Label>
+                <CheckList options={otherWorkflows} selected={listOf(clearanceWorkflowIds)} empty="No other services yet."
+                  onToggle={(id, on) => setClearanceWorkflowIds(toggleIn(clearanceWorkflowIds, id, on))} />
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-between items-center">
+              <span className="text-xs text-gray-500">Saved with the workflow.</span>
+              <button onClick={() => setIsSettingsOpen(false)} className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700">Done</button>
             </div>
           </div>
         </div>
       )}
 
       {/* TOP BAR */}
-      <div className="flex px-4 py-3 border-b border-gray-200 bg-white items-center gap-4 z-10 shrink-0 flex-wrap shadow-sm">
-        <button onClick={() => setIsBrowserOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg text-sm font-bold text-gray-700 transition-colors">
-          <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-          Browse Workflows
-        </button>
-
-        <button onClick={handleCreateNew} disabled={isValidating} className={`flex items-center gap-2 px-4 py-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-sm font-bold text-blue-700 transition-colors ${isValidating ? 'opacity-70' : ''}`}>
-          <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-          Create New
-        </button>
-
-        {selectedWorkflowId && (() => {
-          const loadedWorkflow = savedWorkflows.find(w => w.id === parseInt(selectedWorkflowId));
-          if (!loadedWorkflow) return null;
-          const meta = (typeof loadedWorkflow.flow_structure === 'string' ? JSON.parse(loadedWorkflow.flow_structure) : loadedWorkflow.flow_structure).metadata;
-          const isPublished = meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
-          return (
-            <span className={`px-2 py-1 text-[10px] font-bold rounded uppercase flex items-center gap-1 ${isPublished ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-500'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${isPublished ? 'bg-emerald-400' : 'bg-gray-400'}`}></span>
-              {isPublished ? 'Live' : 'Draft'}
-            </span>
-          );
-        })()}
-
-        <div className="h-6 w-px bg-gray-200"></div>
-
-        <input
-          type="text" placeholder="Enter Workflow Name..." value={workflowName} onChange={(e) => setWorkflowName(e.target.value)}
-          className="flex-grow max-w-[250px] px-3 py-1.5 border-none text-lg font-black text-gray-800 placeholder-gray-300 focus:ring-0 outline-none bg-transparent"
-        />
-
-        <div className="h-6 w-px bg-gray-200 hidden sm:block"></div>
-
-        <MultiSelectDropdown
-          label="Who can submit"
-          options={rolesList}
-          selectedIds={allowedSubmitters.join(',')}
-          onChange={(val) => setAllowedSubmitters(val ? val.split(',').filter(Boolean).map(Number) : [])}
-          title="Roles that are allowed to start this workflow."
-        />
-
-        <MultiSelectDropdown
-          label="Prerequisites"
-          options={savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0))}
-          selectedIds={prerequisiteWorkflowIds}
-          onChange={setPrerequisiteWorkflowIds}
-          title="Workflows that must be fully approved before a user can submit this document."
-        />
-
-        <MultiSelectDropdown
-          label="Clearances"
-          options={savedWorkflows.filter(w => w.id !== parseInt(selectedWorkflowId || 0))}
-          selectedIds={clearanceWorkflowIds}
-          onChange={setClearanceWorkflowIds}
-          title="Sub-workflows spawned on submission that must be approved before this document can be completed."
-        />
-
-        <div className="flex-grow"></div>
-
-        <button onClick={toggleFullScreen} className="text-gray-500 hover:text-blue-600 p-1.5 rounded bg-gray-50 border border-gray-200 mr-2" title="Toggle Full Screen">
-          {isFullScreen ? (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 11lm0 0l-4-4m4 4v-3m0 3H6m6-6l4-4m-4 4h3m-3 0v-3m0 9l4 4m-4-4v3m0-3h3M9 15l-4 4m4-4h-3m3 0v3" /></svg>
-          ) : (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-          )}
-        </button>
-
-        {selectedWorkflowId && (
-          <button onClick={handleDeleteWorkflow} className="text-gray-400 hover:text-red-500 p-1.5 rounded bg-gray-50 border border-gray-200 mr-2" title="Delete Workflow">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-          </button>
+      <header className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 h-14 border-b border-gray-200 bg-white shrink-0">
+        {onExit && (
+          <>
+            <button onClick={onExit} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100" title="Back to the dashboard">
+              <Icon name="back" /> <span className="hidden lg:inline">Dashboard</span>
+            </button>
+            <div className="h-6 w-px bg-gray-200" />
+          </>
         )}
-
-        <button onClick={handleClear} className="text-gray-400 hover:text-red-500 font-medium text-sm px-2">Clear</button>
-        
-        {(() => {
-          let isLoadedWorkflowPublished = false;
-          if (selectedWorkflowId) {
-            const loadedWorkflow = savedWorkflows.find(w => w.id === parseInt(selectedWorkflowId));
-            if (loadedWorkflow) {
-              const meta = (typeof loadedWorkflow.flow_structure === 'string' ? JSON.parse(loadedWorkflow.flow_structure) : loadedWorkflow.flow_structure).metadata;
-              isLoadedWorkflowPublished = meta?.isPublished === true || (meta?.isPublished === undefined && meta?.isComplete !== false);
-            }
-          }
-          
-          return isLoadedWorkflowPublished ? (
-            <button onClick={saveDraft} disabled={isValidating} className={`bg-amber-100 text-amber-700 px-4 py-2 rounded-lg text-sm font-bold transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-amber-200'}`}>
-              Unpublish (Take Down)
-            </button>
-          ) : (
-            <button onClick={saveDraft} disabled={isValidating} className={`bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-gray-50'}`}>
-              Save Draft
-            </button>
-          );
-        })()}
-
-        <button onClick={publishWorkflow} disabled={isValidating} className={`bg-emerald-600 text-white px-5 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${isValidating ? 'opacity-70' : 'hover:bg-emerald-700'}`}>
-          {selectedWorkflowId ? 'Update & Publish' : 'Publish Live'}
+        <button onClick={() => setIsBrowserOpen(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-100" title="Open a workflow">
+          <Icon name="folder" /> <span className="hidden sm:inline">Workflows</span>
         </button>
-      </div>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <input
+            type="text" placeholder="Untitled workflow" value={workflowName} onChange={(e) => setWorkflowName(e.target.value)} aria-label="Workflow name"
+            className="min-w-0 w-full max-w-sm px-2 py-1 rounded-md text-base font-semibold text-gray-900 placeholder-gray-400 bg-transparent hover:bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          />
+          {selectedWorkflowId && loadedWorkflow && (
+            <span className={`px-2 py-0.5 text-[11px] font-semibold rounded-full flex items-center gap-1 shrink-0 ${isLoadedWorkflowPublished ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${isLoadedWorkflowPublished ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+              {isLoadedWorkflowPublished ? 'Live' : 'Draft'}
+            </span>
+          )}
+        </div>
 
-      {/* MAIN WORKSPACE AREA */}
-      <div className="flex flex-1 relative overflow-hidden bg-slate-900">
-        {/* Left Sidebar Palette */}
-        <Sidebar onDragStart={() => { }} />
+        <button onClick={() => setIsSettingsOpen(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-100" title="Who can submit, prerequisites and clearances">
+          <Icon name="settings" /> <span className="hidden md:inline">Settings</span>
+          {settingsCount > 0 && <span className="text-[11px] font-semibold bg-indigo-100 text-indigo-700 rounded-full px-1.5">{settingsCount}</span>}
+        </button>
+        <button onClick={handleCreateNew} disabled={isValidating} className="p-2 rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100 disabled:opacity-50" title="New workflow"><Icon name="plus" /></button>
+        <button onClick={handleClear} className="px-2 py-1.5 rounded-lg text-sm font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 hidden sm:block" title="Remove every step from the canvas">Clear</button>
+        {selectedWorkflowId && (
+          <button onClick={handleDeleteWorkflow} className="p-2 rounded-lg text-gray-500 hover:text-red-600 hover:bg-red-50 hidden sm:block" title="Delete workflow"><Icon name="trash" /></button>
+        )}
+        <button onClick={toggleFullScreen} className="p-2 rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100 hidden sm:block" title={isFullScreen ? 'Exit presentation mode' : 'Presentation mode (hide the browser bars)'}>
+          <Icon name={isFullScreen ? 'shrink' : 'expand'} />
+        </button>
+        <div className="h-6 w-px bg-gray-200 hidden sm:block" />
+        <button onClick={saveDraft} disabled={isValidating}
+          className={`px-3 py-1.5 rounded-lg text-sm font-semibold disabled:opacity-60 ${isLoadedWorkflowPublished ? 'text-amber-800 bg-amber-50 border border-amber-200 hover:bg-amber-100' : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50'}`}
+          title={isLoadedWorkflowPublished ? 'Take it down and keep it as a draft' : 'Save without publishing'}>
+          {isLoadedWorkflowPublished ? 'Unpublish' : 'Save draft'}
+        </button>
+        <button onClick={publishWorkflow} disabled={isValidating} className="px-3 sm:px-4 py-1.5 rounded-lg text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60">
+          {selectedWorkflowId ? 'Publish changes' : 'Publish'}
+        </button>
+      </header>
 
-        {/* Canvas */}
-        <div className="flex-1" ref={reactFlowWrapper}>
+      {/* MAIN WORKSPACE */}
+      <div className="flex flex-1 relative overflow-hidden">
+        <Sidebar onAdd={addNodeAtCenter} />
+
+        <div className="flex-1 relative bg-slate-50" ref={reactFlowWrapper}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -1412,24 +1477,41 @@ const WorkflowBuilderInner = () => {
             snapToGrid={true}
             snapGrid={[15, 15]}
             defaultViewport={{ x: 40, y: 40, zoom: 0.85 }}
+            defaultEdgeOptions={{ type: 'smoothstep' }}
             minZoom={0.25}
             maxZoom={1.5}
             deleteKeyCode={['Backspace', 'Delete']}
+            proOptions={{ hideAttribution: true }}
           >
-            <Background color="#334155" gap={24} size={2} />
-            <Controls className="bg-white rounded border border-gray-300 shadow-sm" />
-            <MiniMap nodeStrokeColor="#94a3b8" nodeColor="#f1f5f9" maskColor="rgba(15, 23, 42, 0.7)" className="rounded border-2 border-slate-700 bg-slate-800" />
+            <Background variant={BackgroundVariant.Dots} color="#cbd5e1" gap={20} size={1.5} />
+            <Controls showInteractive={false} className="!shadow-md !rounded-lg overflow-hidden !border !border-gray-200" />
+            <MiniMap pannable zoomable nodeColor="#c7d2fe" nodeStrokeColor="#6366f1" maskColor="rgba(241, 245, 249, 0.7)" className="!rounded-lg !border !border-gray-200 !shadow-md hidden md:block" />
           </ReactFlow>
+
+          {nodes.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none p-6">
+              <div className="text-center max-w-sm bg-white/90 border border-dashed border-gray-300 rounded-2xl px-8 py-10 pointer-events-auto">
+                <div className="w-12 h-12 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center mx-auto mb-3"><Icon name="task" className="w-6 h-6" /></div>
+                <h3 className="font-semibold text-gray-900">{workflowName ? 'Add the first step' : 'Design a service'}</h3>
+                <p className="text-sm text-gray-500 mt-1">Drag an approval step from the left, or open one of the existing workflows.</p>
+                <div className="flex justify-center gap-2 mt-4">
+                  <button onClick={() => addNodeAtCenter('task')} className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700">Add approval step</button>
+                  <button onClick={() => setIsBrowserOpen(true)} className="px-3 py-2 rounded-lg bg-white border border-gray-300 text-gray-700 text-sm font-semibold hover:bg-gray-50">Open a workflow</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Right Inspector Panel */}
         {selectedNodeId && (
           <PropertyInspector
             selectedNode={selectedNode}
+            allNodes={nodes}
             updateNodeData={updateNodeData}
-            closePanel={() => { 
+            deleteNode={deleteNode}
+            closePanel={() => {
               setNodes(nds => nds.map(n => ({ ...n, selected: false })));
-              setSelectedNodeId(null); 
+              setSelectedNodeId(null);
             }}
             staffList={staffList}
             rolesList={rolesList}
@@ -1445,10 +1527,10 @@ const WorkflowBuilderInner = () => {
 };
 
 // Wrap in provider
-export default function WorkflowBuilder() {
+export default function WorkflowBuilder({ onExit }) {
   return (
     <ReactFlowProvider>
-      <WorkflowBuilderInner />
+      <WorkflowBuilderInner onExit={onExit} />
     </ReactFlowProvider>
   );
 }

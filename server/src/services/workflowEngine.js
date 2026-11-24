@@ -138,11 +138,49 @@ const resolveTaskAssignment = async (db, node, submitterId) => {
     return { assigneeId: await resolveDelegate(db, assignee), roleId: null, departmentId: null };
 };
 
-/** Deadline for a task: "escalate after" hours (falls back to the older slaHours field). */
-const deadlineFor = (node) => {
-    const hours = parseFloat(node?.data?.escalationHours) || parseFloat(node?.data?.slaHours) || null;
-    return hours && hours > 0 ? new Date(Date.now() + hours * 3600 * 1000) : null;
+const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
+
+/**
+ * `hours` after `from`. With `workingDaysOnly`, Saturdays and Sundays don't count:
+ * 1 day (24 hours) given on a Friday afternoon is due on Monday afternoon.
+ */
+const addDuration = (from, hours, workingDaysOnly = false) => {
+    let remaining = hours * 3600 * 1000;
+    if (!workingDaysOnly) return new Date(from.getTime() + remaining);
+    let cursor = new Date(from.getTime());
+    while (remaining > 0) {
+        const nextMidnight = new Date(cursor);
+        nextMidnight.setHours(24, 0, 0, 0);
+        if (isWeekend(cursor)) {
+            cursor = nextMidnight;
+            continue;
+        }
+        const step = Math.min(remaining, nextMidnight - cursor);
+        cursor = new Date(cursor.getTime() + step);
+        remaining -= step;
+    }
+    return cursor;
 };
+
+/** Deadline for a task: "escalate after" hours (falls back to the older slaHours field). */
+const deadlineFor = (node, from = new Date()) => {
+    const hours = parseFloat(node?.data?.escalationHours) || parseFloat(node?.data?.slaHours) || null;
+    return hours && hours > 0 ? addDuration(from, hours, !!node?.data?.workingDaysOnly) : null;
+};
+
+/** The workflow step `actor` is acting on: the current step, or their branch of a parallel step. */
+const stepNodeFor = async (db, doc, actor) => {
+    if (!doc.workflow_id) return null;
+    const nodeId = Array.isArray(doc.parallel_branch_data)
+        ? doc.parallel_branch_data[findBranchForUser(doc.parallel_branch_data, actor)]?.nodeId
+        : doc.current_node_id;
+    const wf = await db.query('SELECT flow_structure FROM workflows WHERE id = $1', [doc.workflow_id]);
+    return graph.parseFlow(wf.rows[0]?.flow_structure).nodes.find((n) => n.id === nodeId) || null;
+};
+
+/** Split a step's comma-separated outcome list ("Undergraduate, Postgraduate") into clean values. */
+const listOf = (value) => (Array.isArray(value) ? value : String(value || '').split(','))
+    .map((v) => String(v).trim()).filter(Boolean);
 
 // ── Side effects ─────────────────────────────────────────────────────────────
 
@@ -461,6 +499,10 @@ module.exports = {
     resumeAfterDelay,
     canActOn,
     findBranchForUser,
+    stepNodeFor,
+    deadlineFor,
+    addDuration,
+    listOf,
     officeHead,
     officeStaff,
     positionHolders,

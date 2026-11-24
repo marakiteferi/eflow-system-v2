@@ -202,6 +202,14 @@ const DocumentDetailsModal = ({ document, onClose }) => {
     [workflow, document]
   );
 
+  // A step's name in this document's workflow, for the outcome history
+  const stepLabel = (nodeId) => {
+    if (!nodeId || !workflow?.flow_structure) return null;
+    let flow = workflow.flow_structure;
+    if (typeof flow === 'string') { try { flow = JSON.parse(flow); } catch (e) { return null; } }
+    return (flow?.nodes || []).find(n => n.id === nodeId)?.data?.label || null;
+  };
+
   const getStepStatus = (step) => {
       if (document.status === 'Approved') return 'completed';
       if (document.status === 'Rejected' && document.current_node_id === step.id) return 'rejected';
@@ -553,6 +561,16 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                         <span className="text-sm font-bold text-gray-800">
                           {entry.status} by {entry.approver_name}
                         </span>
+                        {(entry.outcome || (Array.isArray(entry.checklist_confirmed) && entry.checklist_confirmed.length > 0)) && (
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {entry.outcome && <span className="text-xs font-semibold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded">Outcome: {entry.outcome}</span>}
+                            {Array.isArray(entry.checklist_confirmed) && entry.checklist_confirmed.length > 0 && (
+                              <span className="text-xs font-semibold bg-green-50 text-green-700 px-2 py-0.5 rounded" title={entry.checklist_confirmed.join('\n')}>
+                                ✓ {entry.checklist_confirmed.length} check{entry.checklist_confirmed.length > 1 ? 's' : ''} confirmed
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {entry.comments && (
                           <div className={`mt-1 text-sm p-2 rounded ${entry.status === 'Rejected' ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-700 border border-gray-100'}`}>
                             "{entry.comments}"
@@ -816,8 +834,8 @@ const DocumentDetailsModal = ({ document, onClose }) => {
             {tagHistory.length > 0 && (
               <div className="flex flex-col mt-6 border-t pt-4">
                 <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-3 border-b pb-2 flex items-center gap-2">
-                  <span>🏷️</span> Tag History
-                  <span className="ml-auto text-xs font-semibold bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{tagHistory.length} tag{tagHistory.length > 1 ? 's' : ''} applied</span>
+                  Outcomes
+                  <span className="ml-auto text-xs font-semibold bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{tagHistory.length} recorded</span>
                 </h3>
                 <div className="space-y-3 pl-2 border-l-2 border-green-200 ml-2">
                   {tagHistory.map((tagObj) => (
@@ -828,8 +846,10 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                           <span className="text-xs font-bold text-green-800 bg-green-100 px-2 py-0.5 rounded">"{tagObj.tag}"</span>
                           <span className="text-xs text-gray-400">{new Date(tagObj.created_at).toLocaleString()}</span>
                         </div>
-                        <p className="text-xs text-green-700 mt-1">Applied by: <span className="font-semibold">{tagObj.applied_by || 'System'}</span></p>
-                        {tagObj.node_id && <p className="text-[10px] text-green-600 mt-0.5">Node ID: {tagObj.node_id}</p>}
+                        <p className="text-xs text-green-700 mt-1">
+                          Chosen by <span className="font-semibold">{tagObj.applied_by || 'the submitter'}</span>
+                          {stepLabel(tagObj.node_id) && <> at <span className="font-semibold">{stepLabel(tagObj.node_id)}</span></>}
+                        </p>
                       </div>
                     </div>
                   ))}

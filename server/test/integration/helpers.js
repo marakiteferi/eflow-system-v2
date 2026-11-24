@@ -107,14 +107,14 @@ const submit = async (token, workflowId, { title = 'Request', tag } = {}) => {
 
 /** Request an OTP (shown in the response when email isn't configured) and approve. */
 const lastOtp = new Map();
-const approve = async (token, documentId, comments = 'Looks good') => {
+const approve = async (token, documentId, comments = 'Looks good', extra = {}) => {
     const otpRes = await api('POST', '/approvals/request-otp', { token, body: { documentId } });
     const key = `${token}|${documentId}`;
     // A code requested in the last 30 seconds is still valid: reuse it
     const otp = otpRes.status === 429 ? lastOtp.get(key) : String(otpRes.data.message || '').match(/(\d{6})/)?.[1];
     if (otp) lastOtp.set(key, otp);
     if (!otp) throw new Error(`No OTP returned: ${JSON.stringify(otpRes.data)}`);
-    return api('POST', '/approvals/approve', { token, body: { documentId, otp, comments } });
+    return api('POST', '/approvals/approve', { token, body: { documentId, otp, comments, ...extra } });
 };
 
 /** An admin verification code for `userId`, issued directly (the email flow is tested elsewhere). */

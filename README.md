@@ -3,7 +3,7 @@
 E-Flow replaces paper forms in a university (or any organisation) with digital workflows. A student submits a document, such as a graduation clearance or a course withdrawal request, and E-Flow routes it through the right people. Each approver signs with a one-time code and a drawn signature, and every approval is cryptographically chained, so anyone can later check that the document was really approved and has not been tampered with.
 
 ![Workflow builder](docs/screenshots/workflow-builder.png)
-*Admins design approval routes visually: approvals, if/else conditions, parallel branches that merge, timers, emails, and steps that start other workflows.*
+*The full-screen builder: offices clear a student in parallel, then the Registrar signs. Each step's panel sets who reviews it, its deadline and what the reviewer must confirm before signing.*
 
 ## The problem
 
@@ -17,10 +17,16 @@ In many universities, simple requests like a clearance form still mean walking b
 - Late work escalates up the office automatically: to the position the late step reports to (a Records Officer's work goes to the Deputy), then to the head. No escalation target has to be set on every step.
 
 **Visual workflow builder**
-- Drag-and-drop editor built on React Flow with seven node types: approval, condition, parallel split, merge gate, email, delay, and spawn (start another workflow when this one finishes).
-- Workflows are validated before they can be published: loops (found with a depth-first search), dangling connections, approval steps with no approver, conditions with no value and parallel splits with a single branch are all reported back in the builder.
+- A full-screen, drag-and-drop editor built on React Flow with seven step types: approval, branch on outcome, parallel review, wait for all, send email, wait, and start other services. Steps can also be added with one click, and the service's own settings (who can submit, prerequisites, clearances) sit in one dialog.
+- Each approval step has a settings panel in plain language:
+  - **Who reviews:** an office's shared queue, one of its positions, or its head.
+  - **Deadline:** in hours, days or weeks, with presets, an option to count working days only (weekends don't count), and a reminder and final warning before it.
+  - **Before approving:** a required checklist the reviewer must tick (the server refuses an approval without it, and the confirmations are saved with the signature), and decision outcomes such as *Full waiver / Partial waiver* that the reviewer chooses while signing.
+  - **Reviewer can:** approve, send back, or attach files.
+- A *Branch on outcome* step routes the request by the decision made earlier; its options are picked from the outcomes defined in the workflow, not typed.
+- Workflows are validated before they can be published: loops (found with a depth-first search), dangling connections, approval steps with no approver, branches with no outcome to match and parallel splits with a single branch are all reported back in the builder.
 - Saving as a draft skips validation, and a workflow can't be edited in a way that removes a step a live document is waiting on.
-- Approvers can be an office (its shared queue, one of its positions, or its head), and as advanced options a specific person, a role, or a role within the submitter's department, with per-step permissions (approve, reject, attach) and checklists.
+- Besides offices, a step can go to a specific person, a role, or a role within the submitter's department (advanced options).
 - Workflows can require prerequisite workflows to be completed first.
 
 **Tamper-evident approvals**
@@ -30,10 +36,10 @@ In many universities, simple requests like a clearance form still mean walking b
 - Students can create public verification links (with expiry and use limits, and the option to revoke them) that let anyone confirm a document is genuine.
 
 **Operations**
-- Per-step deadlines: each approval step can set its own deadline, a reminder and a final warning. Once the deadline passes, the step is escalated once to a chosen person.
+- Per-step deadlines with reminders and final warnings. Once the deadline passes, the step escalates once, up the office or to a person chosen on the step.
 - Delay steps pause a document for a set number of hours, and a background job resumes it.
 - Out-of-office delegation that follows chains of delegates and detects loops.
-- In-app and email notifications, version history when a document is resubmitted, and document tags with history.
+- In-app and email notifications, version history when a document is resubmitted, and a history of the outcomes chosen at each step.
 - System statistics on the dashboard (including overdue documents and each office's queue), and a searchable audit log with CSV export.
 
 **Access control**
@@ -46,9 +52,13 @@ In many universities, simple requests like a clearance form still mean walking b
 **Layout**
 - Every part of the app has its own page and address: Dashboard, Tasks, Services, Notifications and My Office for everyone who works in an office, plus Workflows (a full-screen builder), Offices & Positions, People, Permissions and Audit Log for those with the matching permission. On a phone the sidebar becomes a menu.
 
-| Student portal | Staff approval queue |
+| Staff approval queue | Reviewing before signing |
 | --- | --- |
-| ![Student portal](docs/screenshots/student-portal.png) | ![Staff dashboard](docs/screenshots/staff-dashboard.png) |
+| ![Staff approval queue](docs/screenshots/staff-dashboard.png) | ![Review before signing](docs/screenshots/review-step.png) |
+
+| Student portal |
+| --- |
+| ![Student portal](docs/screenshots/student-portal.png) |
 
 | Offices and positions | People |
 | --- | --- |
@@ -87,7 +97,7 @@ flowchart LR
     Cron --> Mail
 ```
 
-**How a document moves:** when a document is submitted, the engine reads the workflow graph and finds the first step. Each approval writes a signed record and moves the document along the matching edge. Condition nodes choose a branch based on the document's tags. Parallel nodes create branches that run at the same time, and the merge gate waits until all of them are done. When the last step is approved, the certificate is stamped onto the PDF and any "spawn" workflows start.
+**How a document moves:** when a document is submitted, the engine reads the workflow graph and finds the first step. Each approval writes a signed record and moves the document along the matching edge. Branch steps choose a path based on the outcome a reviewer chose at an earlier step. Parallel nodes create branches that run at the same time, and the merge gate waits until all of them are done. When the last step is approved, the certificate is stamped onto the PDF and any "spawn" workflows start.
 
 ## Tech stack
 
@@ -108,7 +118,7 @@ flowchart LR
 cd server
 npm install
 cp .env.example .env        # then set DB_PASSWORD, JWT_SECRET and APPROVAL_SIGNING_SECRET
-npm run db:setup            # creates the database, tables and demo accounts
+npm run db:setup            # creates the database, tables and the demo (see below)
 npm run dev                 # API on http://localhost:5000
 
 # 2. Frontend (in a second terminal)
@@ -121,18 +131,31 @@ Email is optional for local use. Without SMTP settings, one-time codes are shown
 
 `npm run db:reset` drops and recreates the database if you want a clean start.
 
-### Demo accounts
+### Demo data
 
-`npm run db:setup` creates these accounts for local testing. The password for all of them is `demo1234`, which you can change with `DEMO_PASSWORD` in `.env`.
+`npm run db:setup` also loads a ready-to-show university, so nothing has to be set up by hand. Every account uses the password `demo1234` (change it with `DEMO_PASSWORD` in `.env`). Add `--no-demo` to skip it, or run `npm run db:demo` to add it to an existing database.
 
-| Account type | Email |
-| --- | --- |
-| Administrator | `admin@example.com` |
-| Staff | `staff@example.com` |
-| Staff | `staff2@example.com` |
-| Student | `abebe@example.com` |
+**Offices and staff**
 
-Two demo offices are created too: the **Registrar's Office** (head: `staff2@example.com`; positions Deputy Registrar and Records Officer, which reports to the Deputy; `staff@example.com` is the Records Officer) and the **Library** (head: `staff@example.com`).
+| Office | Head | Positions and officers |
+| --- | --- | --- |
+| Registrar's Office | `registrar@example.com` (Hana Tesfaye) | Deputy Registrar: `deputy.registrar@example.com`; Records Officer (reports to the Deputy): `records@example.com` |
+| Library | `librarian@example.com` (Yonas Kebede) | Circulation Officer: `library@example.com` |
+| Finance Office | `finance@example.com` (Tigist Worku) | Cashier: `cashier@example.com` |
+| Dean of Students | `dean@example.com` (Dr. Selam Mekonnen) | Student Affairs Officer: `studentaffairs@example.com` |
+
+**Other accounts:** `admin@example.com` (Administrator), `designer@example.com` (staff who can design workflows and manage offices), and the students `abebe@example.com`, `sara@example.com`, `nahom@example.com` and `ruth@example.com`. The general test accounts `staff@example.com` and `staff2@example.com` are officers in the Library and the Registrar's Office.
+
+**Live services**
+
+- **Official Transcript Request:** the Cashier checks the fee, the Records Officer prepares the transcript, the Registrar signs, and the student is emailed. Each step has a checklist and a working-day deadline.
+- **Graduation Clearance:** the Library, Finance and Dean of Students clear the student in parallel, then the Registrar approves.
+- **Fee Waiver Application:** Student Affairs decides *Full waiver* or *Partial waiver*; a full waiver goes to the head of Finance, a partial one to the Cashier.
+- **Student ID Replacement:** any Registrar officer can claim it, with a two-working-day deadline.
+
+**Requests already in progress:** one transcript fully approved and stamped (Abebe), one waiting in the Records Officer's queue (Sara), one claimed by the Cashier (Nahom); a graduation clearance with two of three offices done (Ruth) and one just submitted; a fee waiver routed to the Cashier as a partial waiver and one waiting for a decision; an ID request sent back to the student (Ruth) and one past its deadline.
+
+**A two-minute tour:** sign in as `records@example.com` and approve Sara's transcript from Tasks (claim it, tick the checklist, sign with the code shown on screen); then as `registrar@example.com` to sign it off; then as `studentaffairs@example.com` to decide Sara's fee waiver and watch it route by the outcome; then as `designer@example.com` to open any service in the builder. `admin@example.com` shows the system overview, People and Offices.
 
 ### Running on more than one server
 
@@ -146,7 +169,7 @@ npm test            # unit tests + integration tests (needs PostgreSQL)
 npm run test:unit   # unit tests only, no database needed
 ```
 
-The integration tests start the real API against a separate `eflow_test` database (created and reset automatically) and drive whole documents through it: linear, conditional and parallel routes, role-based load balancing, delegation, delays, deadline escalation, spawned workflows, clearances, account types and permissions, adding, importing and deactivating people, offices and positions (claiming, cover, escalation up the office), protected file downloads, sign-in limits, and tamper detection on the signature chain. The unit tests cover the graph walker, workflow validation and the signature chain on their own.
+The integration tests start the real API against a separate `eflow_test` database (created and reset automatically) and drive whole documents through it: linear, conditional and parallel routes, role-based load balancing, delegation, delays, deadline escalation, spawned workflows, clearances, required checklists and decision outcomes, working-day deadlines, the demo data loading cleanly, account types and permissions, adding, importing and deactivating people, offices and positions (claiming, cover, escalation up the office), protected file downloads, sign-in limits, and tamper detection on the signature chain. The unit tests cover the graph walker, workflow validation and the signature chain on their own.
 
 GitHub Actions runs the full suite against PostgreSQL 16 and builds the client on every push and pull request.
 
@@ -168,6 +191,7 @@ server/
   db/schema.sql         Base schema
   db/migrations/        Incremental schema changes, applied in order
   db/setup.js           One-command database setup
+  db/demo.js            Demo offices, people, services and requests
 docs/screenshots/       Images used in this README
 ```
 
