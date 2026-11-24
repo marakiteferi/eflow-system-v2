@@ -164,62 +164,48 @@ router.get('/users/by-role', authenticateToken, staffOnly, async (req, res) => {
 // ==========================================
 // AUDIT LOG AND STATISTICS
 // ==========================================
+/** The audit query, filtered by ?startDate, ?endDate and ?search (action, person or document). */
+const auditQuery = ({ startDate, endDate, search }, limit = null) => {
+    let query = `
+        SELECT a.id, a.action, a.timestamp, a.role_id,
+               u.name as user_name, u.email as user_email,
+               d.title as document_title, a.document_id,
+               CASE a.role_id WHEN 1 THEN 'Student' WHEN 2 THEN 'Staff' WHEN 3 THEN 'Administrator' END as role_name
+        FROM audit_logs a
+        LEFT JOIN users u ON a.user_id = u.id
+        LEFT JOIN documents d ON a.document_id = d.id
+        WHERE 1=1`;
+    const params = [];
+    if (startDate) {
+        params.push(startDate);
+        query += ` AND a.timestamp >= $${params.length}`;
+    }
+    if (endDate) {
+        // Include the whole end day
+        params.push(endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`);
+        query += ` AND a.timestamp <= $${params.length}`;
+    }
+    if (search) {
+        params.push(`%${search}%`);
+        query += ` AND (a.action ILIKE $${params.length} OR u.name ILIKE $${params.length} OR d.title ILIKE $${params.length})`;
+    }
+    query += ' ORDER BY a.timestamp DESC, a.id DESC';
+    if (limit) query += ` LIMIT ${Number(limit)}`;
+    return { query, params };
+};
+
 router.get('/audit-logs', authenticateToken, requirePermission('view_audit_log'), async (req, res) => {
     try {
-        const result = await pool.query(`
-            SELECT a.id, a.action, a.timestamp, a.role_id,
-                   u.name as user_name,
-                   d.title as document_title,
-                   CASE a.role_id WHEN 1 THEN 'Student' WHEN 2 THEN 'Staff' WHEN 3 THEN 'Administrator' END as role_name
-            FROM audit_logs a
-            LEFT JOIN users u ON a.user_id = u.id
-            LEFT JOIN documents d ON a.document_id = d.id
-            ORDER BY a.timestamp DESC LIMIT 100
-        `);
-        res.status(200).json(result.rows);
+        const { query, params } = auditQuery(req.query, 300);
+        res.status(200).json((await pool.query(query, params)).rows);
     } catch (err) {
         res.status(500).json({ message: 'Error fetching audit logs' });
     }
 });
 
 router.get('/audit-logs/export', authenticateToken, requirePermission('view_audit_log'), async (req, res) => {
-    const { startDate, endDate, search } = req.query;
     try {
-        let query = `
-            SELECT a.id, a.action, a.timestamp, a.role_id,
-                   u.name as user_name,
-                   d.title as document_title,
-                   CASE a.role_id WHEN 1 THEN 'Student' WHEN 2 THEN 'Staff' WHEN 3 THEN 'Administrator' END as role_name
-            FROM audit_logs a
-            LEFT JOIN users u ON a.user_id = u.id
-            LEFT JOIN documents d ON a.document_id = d.id
-            WHERE 1=1
-        `;
-        const params = [];
-        let paramIndex = 1;
-
-        if (startDate) {
-            query += ` AND a.timestamp >= $${paramIndex++}`;
-            params.push(startDate);
-        }
-        if (endDate) {
-            // Include the entire end date by appending time if not provided
-            const end = endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`;
-            query += ` AND a.timestamp <= $${paramIndex++}`;
-            params.push(end);
-        }
-        if (search) {
-            query += ` AND (
-                a.action ILIKE $${paramIndex} OR 
-                u.name ILIKE $${paramIndex} OR 
-                d.title ILIKE $${paramIndex}
-            )`;
-            params.push(`%${search}%`);
-            paramIndex++;
-        }
-
-        query += ` ORDER BY a.timestamp DESC`;
-
+        const { query, params } = auditQuery(req.query);
         const result = await pool.query(query, params);
 
         let csvContent = "Timestamp,Action,Document,User\n";
@@ -256,7 +242,17 @@ router.get('/stats', authenticateToken, anyAdminPower, async (req, res) => {
                 total: parseInt(totalDocs.rows[0].count), approved: parseInt(approvedDocs.rows[0].count),
                 pending: parseInt(pendingDocs.rows[0].count), rejected: parseInt(rejectedDocs.rows[0].count)
             },
-            users: parseInt(totalUsers.rows[0].count), workflows: parseInt(totalWorkflows.rows[0].count)
+            users: parseInt(totalUsers.rows[0].count), workflows: parseInt(totalWorkflows.rows[0].count),
+            overdue: (await pool.query(
+                "SELECT COUNT(*)::int AS n FROM documents WHERE status = 'Pending' AND delegation_sla_deadline < NOW()")).rows[0].n,
+            // How busy each office is right now
+            offices: (await pool.query(
+                `SELECT o.id, o.name,
+                        COUNT(d.id)::int AS waiting,
+                        COUNT(d.id) FILTER (WHERE d.current_assignee_id IS NULL)::int AS unclaimed,
+                        COUNT(d.id) FILTER (WHERE d.delegation_sla_deadline < NOW())::int AS overdue
+                 FROM offices o LEFT JOIN documents d ON d.current_office_id = o.id AND d.status = 'Pending'
+                 GROUP BY o.id ORDER BY o.name`)).rows,
         });
     } catch (err) {
         res.status(500).json({ message: 'Error fetching stats' });

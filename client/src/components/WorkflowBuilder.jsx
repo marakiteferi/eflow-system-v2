@@ -35,8 +35,11 @@ const TaskNode = ({ id, data, selected }) => {
   let badgeText = '⚠️ Unassigned';
 
   if (data.assignmentStrategy === 'office') {
-    const officeName = data.officesList?.find(o => o.id === parseInt(data.officeId))?.name;
-    badgeText = officeName ? `🏛️ ${officeName} · ${data.officePosition === 'head' ? 'Head' : 'Any officer'}` : '⚠️ Pick an office';
+    const office = data.officesList?.find(o => o.id === parseInt(data.officeId));
+    const who = data.officePosition === 'head' ? 'Head'
+      : data.officePosition === 'position' ? (office?.positions?.find(p => p.id === parseInt(data.positionId))?.name || '⚠️ Pick a position')
+      : 'Any officer';
+    badgeText = office ? `🏛️ ${office.name} · ${who}` : '⚠️ Pick an office';
   } else if (data.assignmentStrategy === 'role_based') {
     const roleName = data.rolesList?.find(r => r.id === parseInt(data.roleId))?.name || 'Role';
     if (data.routingType === 'ANY') badgeText = `👥 Any ${roleName}`;
@@ -281,6 +284,7 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
     const parts = val.split(':');
     onChange('officeId', null);
     onChange('officePosition', null);
+    onChange('positionId', null);
     if (parts[0] === 'USER') {
       onChange('assignmentStrategy', 'specific_user');
       onChange('assignee', parts[1]);
@@ -326,7 +330,9 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                     onChange={(e) => {
                       onChange('assignmentStrategy', 'office');
                       onChange('officeId', e.target.value || null);
-                      if (!data.officePosition) onChange('officePosition', 'officer');
+                      // A position belongs to one office, so a new office starts from "any officer"
+                      onChange('officePosition', 'officer');
+                      onChange('positionId', null);
                       onChange('assignee', null); onChange('roleId', null); onChange('routingType', null); onChange('targetDepartmentId', null);
                     }}
                     className="w-full text-sm border-gray-300 rounded p-2 border bg-white shadow-sm"
@@ -334,22 +340,38 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                     <option value="">-- Select office --</option>
                     {officesList.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
                   </select>
-                  {data.assignmentStrategy === 'office' && data.officeId && (
-                    <div className="flex gap-1.5">
-                      {[['officer', 'Any officer'], ['head', 'Head of office']].map(([value, text]) => (
-                        <button key={value} type="button" onClick={() => onChange('officePosition', value)}
-                          className={`flex-1 text-xs py-1.5 rounded border font-semibold ${ (data.officePosition || 'officer') === value ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-300'}`}>
-                          {text}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  {data.assignmentStrategy === 'office' && data.officeId && (() => {
+                    const office = officesList.find(o => o.id === parseInt(data.officeId));
+                    const value = data.officePosition === 'position' ? `pos:${data.positionId || ''}` : (data.officePosition || 'officer');
+                    return (
+                      <select
+                        value={value}
+                        aria-label="Who in the office"
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v.startsWith('pos:')) { onChange('officePosition', 'position'); onChange('positionId', v.slice(4)); }
+                          else { onChange('officePosition', v); onChange('positionId', null); }
+                        }}
+                        className="w-full text-sm border-gray-300 rounded p-2 border bg-white shadow-sm"
+                      >
+                        <option value="officer">Any officer (shared queue)</option>
+                        <option value="head">Head of office</option>
+                        {(office?.positions || []).length > 0 && (
+                          <optgroup label="A position in this office">
+                            {office.positions.map(p => <option key={p.id} value={`pos:${p.id}`}>{p.name}</option>)}
+                          </optgroup>
+                        )}
+                      </select>
+                    );
+                  })()}
                   <p className="text-[10px] text-indigo-700">
                     {officesList.length === 0
-                      ? 'No offices yet. Create them in Admin Setup → Offices.'
-                      : (data.officePosition || 'officer') === 'head'
+                      ? 'No offices yet. Create them on the Offices page.'
+                      : data.officePosition === 'head'
                         ? 'Goes to the head of the office, or to whoever covers for them.'
-                        : 'Goes to the office queue; any officer can claim it. Late steps escalate to the head.'}
+                        : data.officePosition === 'position'
+                          ? 'Goes to whoever holds this position; they claim it from the office queue. Late steps go to the position it reports to, then the head.'
+                          : 'Goes to the office queue; any officer can claim it. Late steps escalate up the office to the head.'}
                   </p>
                   <button type="button" onClick={() => setShowAdvanced(true)} className="text-[10px] text-gray-500 underline">Advanced: a specific person or role</button>
                 </div>
@@ -363,15 +385,14 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                 <option value="">-- Select Assignee --</option>
                 
                 <optgroup label="Applicant's Department (Dynamic)">
-                  {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false && staffList.some(s => s.role_id === r.id)).map(r => (
+                  {rolesList.filter(r => r.id !== 1 && staffList.some(s => s.role_id === r.id)).map(r => (
                     <option key={`dyn-${r.id}`} value={`ROLE:INITIATOR_DEPT:${r.id}`}>Applicant's {r.name}</option>
                   ))}
                 </optgroup>
 
                 {departments.map(d => {
-                  const validCombos = rolesList.filter(r => 
-                    (r.is_active || r.id <= 3) && 
-                    r.can_approve !== false && 
+                  const validCombos = rolesList.filter(r =>
+                    r.id !== 1 &&
                     staffList.some(s => s.role_id === r.id && s.department_id === d.id)
                   );
                   if (validCombos.length === 0) return null;
@@ -385,7 +406,7 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                 })}
 
                 <optgroup label="Global Roles (Any Department)">
-                  {rolesList.filter(r => (r.is_active || r.id <= 3) && r.can_approve !== false && staffList.some(s => s.role_id === r.id)).map(r => (
+                  {rolesList.filter(r => r.id !== 1 && staffList.some(s => s.role_id === r.id)).map(r => (
                     <option key={`any-${r.id}`} value={`ROLE:ANY:${r.id}`}>Any {r.name}</option>
                   ))}
                 </optgroup>
@@ -1157,7 +1178,7 @@ const WorkflowBuilderInner = () => {
 
 
   return (
-    <div ref={builderContainerRef} className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-140px)] min-h-[700px] w-full">
+    <div ref={builderContainerRef} className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[calc(100vh-7rem)] min-h-[640px] w-full">
       {/* Toast Notification */}
       {toast.text && (
         <div className="fixed top-6 right-6 z-[80]">
@@ -1304,7 +1325,7 @@ const WorkflowBuilderInner = () => {
         <div className="h-6 w-px bg-gray-200 hidden sm:block"></div>
 
         <MultiSelectDropdown
-          label="Applies To Roles"
+          label="Who can submit"
           options={rolesList}
           selectedIds={allowedSubmitters.join(',')}
           onChange={(val) => setAllowedSubmitters(val ? val.split(',').filter(Boolean).map(Number) : [])}
