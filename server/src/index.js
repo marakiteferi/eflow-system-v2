@@ -13,7 +13,6 @@ const path = require('path');
 const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
 
 // 1. Initialize app FIRST
 const app = express();
@@ -26,21 +25,17 @@ const UPLOADS_DIR = path.join(__dirname, '../uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use('/uploads', express.static(UPLOADS_DIR));
 // 3. Database Pool
-const pool = new Pool({
-    user: process.env.DB_USER,
-    host: process.env.DB_HOST,
-    database: process.env.DB_NAME,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
-});
+const pool = require('./db');
 
-pool.connect((err, client, release) => {
-    if (err) console.error('❌ Error connecting to PostgreSQL:', err.message);
-    else {
-        console.log('✅ Successfully connected to PostgreSQL!');
-        release();
-    }
-});
+if (require.main === module) {
+    pool.connect((err, client, release) => {
+        if (err) console.error('❌ Error connecting to PostgreSQL:', err.message);
+        else {
+            console.log('✅ Successfully connected to PostgreSQL!');
+            release();
+        }
+    });
+}
 
 // 4. API Routes
 app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK' }));
@@ -51,8 +46,12 @@ app.use('/api/approvals', require('./routes/approvalRoutes')); // We will build 
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/users', require('./routes/userRoutes')); // For OOO and delegation
 app.use('/api/notifications', require('./routes/notificationRoutes')); // In-app notifications
-// 5. Start Server
-startSlaMonitor(); // Activate the SLA monitoring engine
-app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-});
+// 5. Start Server (only when run directly, so tests can import the app)
+if (require.main === module) {
+    startSlaMonitor(); // delay timers + SLA monitoring
+    app.listen(PORT, () => {
+        console.log(`🚀 Server running on http://localhost:${PORT}`);
+    });
+}
+
+module.exports = app;

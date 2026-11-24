@@ -1,15 +1,8 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { Pool } = require('pg');
 
 // Initialize database connection
-const pool = new Pool({
-    user: process.env.DB_USER,
-    host: process.env.DB_HOST,
-    database: process.env.DB_NAME,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
-});
+const pool = require('../db');
 
 // User Registration
 const registerUser = async (req, res) => {
@@ -76,7 +69,7 @@ const loginUser = async (req, res) => {
 
         // Generate JWT
         const token = jwt.sign(
-            { id: user.id, role_id: user.role_id },
+            { id: user.id, role_id: user.role_id, department_id: user.department_id },
             process.env.JWT_SECRET,
             { expiresIn: '8h' }
         );
