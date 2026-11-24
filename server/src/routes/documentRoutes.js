@@ -50,7 +50,11 @@ const readText = async (filePath, mimetype) => {
     try {
         if (mimetype === 'application/pdf') {
             const dataBuffer = fs.readFileSync(filePath);
-            const pdfData = await pdfParse(dataBuffer);
+            // The bundled PDF reader fails now and then on a file it reads fine a moment later
+            let pdfData;
+            for (let attempt = 1; ; attempt++) {
+                try { pdfData = await pdfParse(dataBuffer); break; } catch (err) { if (attempt >= 3) throw err; }
+            }
             if (!pdfData || !pdfData.text || pdfData.text.trim() === '') {
                 return '[System Note: No digital text found. If this is a scanned PDF, please upload it as an Image (PNG/JPG) so the OCR system can read it.]';
             }
@@ -216,7 +220,7 @@ router.get('/:id/versions', authenticateToken, requireDocumentAccess, async (req
 router.get('/:id/history', authenticateToken, requireDocumentAccess, async (req, res) => {
     try {
         const query = `
-            SELECT a.status, a.comments, a.created_at, u.name as approver_name, a.node_id
+            SELECT a.status, a.comments, a.created_at, u.name as approver_name, a.node_id, a.outcome, a.checklist_confirmed
             FROM approvals a JOIN users u ON a.approver_id = u.id
             WHERE a.document_id = $1 ORDER BY a.created_at ASC
         `;
@@ -435,46 +439,55 @@ router.get('/verify-link/:token/download', async (req, res) => {
         res.status(500).json({ message: 'Server error during download' });
     }
 });
-// 5. PATCH: Set metadata tag on a document (for staff to trigger condition nodes)
+// 5. PATCH: Record the outcome of the current step early (it can also be sent with the approval itself)
 router.patch('/:id/tag', authenticateToken, async (req, res) => {
     const { tag } = req.body;
     const documentId = req.params.id;
 
-    if (tag === undefined || tag === null) {
-        return res.status(400).json({ message: 'A tag value is required.' });
+    if (tag === undefined || tag === null || !String(tag).trim()) {
+        return res.status(400).json({ message: 'An outcome is required.' });
     }
 
     try {
-        // Only the current assignee or a Super Admin can set the tag
-        const docQuery = await pool.query('SELECT current_assignee_id FROM documents WHERE id = $1', [documentId]);
+        const docQuery = await pool.query('SELECT * FROM documents WHERE id = $1', [documentId]);
         if (docQuery.rows.length === 0) {
             return res.status(404).json({ message: 'Document not found.' });
         }
-
         const doc = docQuery.rows[0];
-        const isSuperAdmin = req.user.role_id === 3;
-        const isCurrentAssignee = doc.current_assignee_id === req.user.id;
 
-        if (!isSuperAdmin && !isCurrentAssignee) {
-            return res.status(403).json({ message: 'You are not authorized to tag this document.' });
+        // Only someone who can act on the current step (or an administrator) can set its outcome
+        const actor = { ...(await pool.query('SELECT id, role_id, department_id FROM users WHERE id = $1', [req.user.id])).rows[0],
+            ...(await engine.loadOfficeMembership(pool, req.user.id)) };
+        if (!engine.canActOn(doc, actor)) {
+            return res.status(403).json({ message: 'You are not authorized to set the outcome of this document.' });
+        }
+
+        // When the step lists its outcomes, only those can be chosen
+        const step = await engine.stepNodeFor(pool, doc, actor);
+        const outcomes = engine.listOf(step?.data?.allowedTags);
+        let value = String(tag).trim();
+        if (outcomes.length) {
+            const match = outcomes.find((o) => o.toLowerCase() === value.toLowerCase());
+            if (!match) return res.status(400).json({ message: `Choose one of: ${outcomes.join(', ')}.` });
+            value = match;
         }
 
         await pool.query(
             'UPDATE documents SET metadata_tag = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-            [tag.trim(), documentId]
+            [value, documentId]
         );
 
         await pool.query(
             "INSERT INTO document_tags_history (document_id, tag_name, tag_value, applied_by_user_id, node_id) VALUES ($1, 'metadata_tag', $2, $3, $4)",
-            [documentId, tag.trim(), req.user.id, doc.current_node_id || null]
+            [documentId, value, req.user.id, step?.id || doc.current_node_id || null]
         );
 
         await pool.query(
             "INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)",
-            [documentId, req.user.id, `Document tagged as: "${tag.trim()}"`]
+            [documentId, req.user.id, `Outcome chosen: "${value}"`]
         );
 
-        res.status(200).json({ message: `Document tagged as "${tag.trim()}" successfully.` });
+        res.status(200).json({ message: `Outcome set to "${value}".` });
     } catch (err) {
         console.error('Error setting document tag:', err);
         res.status(500).json({ message: 'Server error setting tag.' });
