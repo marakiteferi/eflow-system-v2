@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { registerUser, loginUser } = require('../controllers/authController');
+const { registerUser, loginUser, getMe } = require('../controllers/authController');
 const authenticateToken = require('../middleware/authMiddleware');
 const { signFileToken } = require('../middleware/fileAccess');
 const { loginLimiter, passwordResetLimiter } = require('../middleware/rateLimits');
@@ -24,6 +24,9 @@ router.post('/register', registerUser);
 
 // POST /api/auth/login
 router.post('/login', loginLimiter, loginUser);
+
+// Current account type, permissions and offices (the client refreshes these on load)
+router.get('/me', authenticateToken, getMe);
 
 // GET /api/auth/file-token: a fresh token for opening uploaded files
 router.get('/file-token', authenticateToken, (req, res) => {

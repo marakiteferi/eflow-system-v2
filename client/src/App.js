@@ -18,14 +18,9 @@ function App() {
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/verify/:token" element={<PublicVerification />} />
           
-          <Route 
-            path="/dashboard" 
-            element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            } 
-          />
+          {/* Each section of the app has its own address: /dashboard/tasks, /dashboard/people... */}
+          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/dashboard/:page" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route 
           path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
           

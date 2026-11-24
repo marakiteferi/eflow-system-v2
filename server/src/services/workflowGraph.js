@@ -167,6 +167,8 @@ const validateFlow = (flow) => {
                 : !n.data?.assignee;
             if (missing) {
                 problems.push(strategy === 'office' ? `"${label}" has no office selected.` : `"${label}" has no approver assigned.`);
+            } else if (strategy === 'office' && n.data?.officePosition === 'position' && !n.data?.positionId) {
+                problems.push(`"${label}" is sent to a position, but no position is selected.`);
             }
         }
         if (n.type === 'condition' && !String(n.data?.conditionValue || '').trim()) {

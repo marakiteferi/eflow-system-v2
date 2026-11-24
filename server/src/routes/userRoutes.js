@@ -33,7 +33,7 @@ router.post('/ooo', authenticateToken, async (req, res) => {
 router.get('/delegates', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT id, name, email FROM users WHERE (role_id = 2 OR role_id >= 3) AND id != $1',
+            'SELECT id, name, email FROM users WHERE role_id <> 1 AND COALESCE(is_active, TRUE) AND id != $1',
             [req.user.id]
         );
         res.status(200).json(result.rows);

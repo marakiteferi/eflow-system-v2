@@ -180,6 +180,70 @@ test('offices', { skip, concurrency: false }, async (t) => {
         assert.equal(d.status, 'Approved');
     });
 
+    let deputy, records;
+    await t.test('the head sets up positions, and who reports to whom', async () => {
+        assert.equal((await h.api('POST', `/offices/${registrar}/positions`, { token: officer.token, body: { name: 'Deputy' } })).status, 403);
+        deputy = (await h.api('POST', `/offices/${registrar}/positions`, { token: head.token, body: { name: 'Deputy Registrar' } })).data.id;
+        const r = await h.api('POST', `/offices/${registrar}/positions`, { token: head.token, body: { name: 'Records Officer', reports_to_id: deputy } });
+        assert.equal(r.status, 201);
+        records = r.data.id;
+        const loop = await h.api('PUT', `/offices/${registrar}/positions/${deputy}`, { token: head.token, body: { reports_to_id: records } });
+        assert.equal(loop.status, 400, 'positions cannot report to each other in a loop');
+
+        assert.equal((await h.api('PUT', `/offices/${registrar}/members/${O1}`, { token: head.token, body: { position_id: records } })).status, 200);
+        assert.equal((await h.api('PUT', `/offices/${registrar}/members/${O2}`, { token: head.token, body: { position_id: deputy } })).status, 200);
+        const mine = (await h.api('GET', '/offices/mine', { token: head.token })).data.find((o) => o.id === registrar);
+        assert.deepEqual(mine.positions.map((p) => p.name), ['Deputy Registrar', 'Records Officer']);
+        assert.equal(mine.members.find((m) => m.id === O1).position_name, 'Records Officer');
+    });
+
+    await t.test('a position step needs a position before it can be published', async () => {
+        const r = await h.api('POST', '/workflows', {
+            token: admin.token,
+            body: { name: 'No position', flow_structure: { nodes: [h.task('step', '', office(registrar, { officePosition: 'position' }))], edges: [], metadata: { isPublished: true } } },
+        });
+        assert.equal(r.status, 400);
+        assert.match(JSON.stringify(r.data.problems), /no position is selected/);
+    });
+
+    await t.test('a step for one position goes only to the people holding it', async () => {
+        const wf = await h.createWorkflow(admin.token, 'Records check',
+            [h.task('records', '', office(registrar, { officePosition: 'position', positionId: String(records) }))], []);
+        const doc = await h.submit(student.token, wf.id);
+        const d = await h.getDoc(doc.id);
+        assert.equal(d.current_position_id, records);
+        assert.equal(d.current_assignee_id, null);
+        assert.ok((await notes(O1, doc.id)).length > 0, 'the records officer is told');
+        assert.equal((await notes(O2, doc.id)).length, 0, 'the deputy is not');
+
+        assert.equal((await claim(officer2, doc.id)).status, 409, 'other officers cannot claim it');
+        assert.equal((await h.approve(officer2.token, doc.id)).status, 403, 'or approve it');
+        assert.equal((await claim(officer, doc.id)).status, 200);
+        assert.equal((await h.approve(officer.token, doc.id)).status, 200);
+    });
+
+    await t.test('late work escalates up the office: records officer to deputy', async () => {
+        const wf = await h.createWorkflow(admin.token, 'Records escalation',
+            [h.task('records', '', office(registrar, { officePosition: 'position', positionId: String(records), escalationHours: 1 }))], []);
+        const doc = await h.submit(student.token, wf.id);
+        await claim(officer, doc.id);
+        await h.pool.query("UPDATE documents SET delegation_sla_deadline = NOW() - INTERVAL '1 minute' WHERE id = $1", [doc.id]);
+        await runBackgroundJobs();
+        assert.equal((await h.getDoc(doc.id)).current_assignee_id, O2, 'the deputy takes it over');
+        assert.ok((await notes(O2, doc.id)).some((x) => x.startsWith('🚨 Escalated to you')));
+        assert.equal((await h.approve(officer2.token, doc.id)).status, 200);
+    });
+
+    await t.test('a position nobody holds sends the step to the head', async () => {
+        const cashier = (await h.api('POST', `/offices/${registrar}/positions`, { token: head.token, body: { name: 'Cashier' } })).data.id;
+        const wf = await h.createWorkflow(admin.token, 'Fees',
+            [h.task('fees', '', office(registrar, { officePosition: 'position', positionId: String(cashier) }))], []);
+        const doc = await h.submit(student.token, wf.id);
+        assert.equal((await h.getDoc(doc.id)).current_assignee_id, HEAD);
+        const used = await h.api('DELETE', `/offices/${registrar}/positions/${cashier}`, { token: head.token });
+        assert.equal(used.status, 409, 'a position used by a workflow cannot be removed');
+    });
+
     await t.test('an office used by a workflow cannot be deleted', async () => {
         const r = await h.api('DELETE', `/offices/${registrar}`, { token: admin.token });
         assert.equal(r.status, 409);

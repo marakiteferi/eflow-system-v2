@@ -1,7 +1,8 @@
 /**
  * Offices (Registrar, Library, Finance...): the admin creates offices and appoints a head;
- * each head manages their own officers and who covers for whom. Workflow steps can be sent
- * to an office, where any officer can claim the document from the shared queue.
+ * each head manages their own officers, the positions in the office (Deputy, Cashier...)
+ * and who covers for whom. Workflow steps can be sent to an office, or to one position in
+ * it, where an officer claims the document from the shared queue.
  */
 const express = require('express');
 const router = express.Router();
@@ -9,19 +10,17 @@ const pool = require('../db');
 const authenticateToken = require('../middleware/authMiddleware');
 const { parseFlow } = require('../services/workflowGraph');
 
-const SUPER_ADMIN_ROLE_ID = 3;
+const { hasPermission } = require('../services/access');
+
 const STUDENT_ROLE_ID = 1;
 
-const isAdmin = async (user) => {
-    if (user.role_id === SUPER_ADMIN_ROLE_ID) return true;
-    const r = await pool.query('SELECT can_manage_users FROM dynamic_roles WHERE id = $1 AND is_active = TRUE', [user.role_id]);
-    return Boolean(r.rows[0]?.can_manage_users);
-};
+// Administrators, and staff given "Manage offices", manage every office
+const isAdmin = (user) => hasPermission(user, 'manage_offices');
 
 const requireAdmin = async (req, res, next) => {
     try {
         if (await isAdmin(req.user)) return next();
-        return res.status(403).json({ message: 'Only administrators can manage offices.' });
+        return res.status(403).json({ message: 'You need the "Manage offices" permission to do this.' });
     } catch (err) {
         return res.status(500).json({ message: 'Server error verifying permissions.' });
     }
@@ -53,9 +52,18 @@ const officeDetails = async (where = '', params = []) => {
     )).rows;
     if (!offices.length) return [];
     const members = (await pool.query(
-        `SELECT m.office_id, u.id, u.name, u.email, u.is_out_of_office, u.delegate_id, d.name AS delegate_name
+        `SELECT m.office_id, m.position_id, p.name AS position_name, u.id, u.name, u.email,
+                u.is_out_of_office, u.delegate_id, d.name AS delegate_name
          FROM office_members m JOIN users u ON u.id = m.user_id LEFT JOIN users d ON d.id = u.delegate_id
-         WHERE m.office_id = ANY($1) ORDER BY u.name`,
+         LEFT JOIN office_positions p ON p.id = m.position_id
+         WHERE m.office_id = ANY($1) AND COALESCE(u.is_active, TRUE) ORDER BY u.name`,
+        [offices.map((o) => o.id)]
+    )).rows;
+    const positions = (await pool.query(
+        `SELECT p.id, p.office_id, p.name, p.reports_to_id, r.name AS reports_to_name,
+                (SELECT COUNT(*)::int FROM office_members m WHERE m.position_id = p.id) AS holders
+         FROM office_positions p LEFT JOIN office_positions r ON r.id = p.reports_to_id
+         WHERE p.office_id = ANY($1) ORDER BY p.name`,
         [offices.map((o) => o.id)]
     )).rows;
     const queue = (await pool.query(
@@ -67,6 +75,7 @@ const officeDetails = async (where = '', params = []) => {
     return offices.map((o) => ({
         ...o,
         members: members.filter((m) => m.office_id === o.id),
+        positions: positions.filter((p) => p.office_id === o.id),
         waiting: queue.find((q) => q.office_id === o.id)?.waiting || 0,
         unclaimed: queue.find((q) => q.office_id === o.id)?.unclaimed || 0,
     }));
@@ -180,7 +189,14 @@ router.post('/:id/members', authenticateToken, requireHeadOrAdmin, async (req, r
     const userId = parseInt(req.body.user_id, 10);
     try {
         if (!(await isStaff(pool, userId))) return res.status(400).json({ message: 'Only staff members can be officers.' });
-        await pool.query('INSERT INTO office_members (office_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, userId]);
+        const positionId = req.body.position_id ? parseInt(req.body.position_id, 10) : null;
+        if (positionId && !(await pool.query('SELECT 1 FROM office_positions WHERE id = $1 AND office_id = $2', [positionId, req.params.id])).rows.length) {
+            return res.status(400).json({ message: 'That position is not in this office.' });
+        }
+        await pool.query(
+            `INSERT INTO office_members (office_id, user_id, position_id) VALUES ($1, $2, $3)
+             ON CONFLICT (office_id, user_id) DO UPDATE SET position_id = COALESCE(EXCLUDED.position_id, office_members.position_id)`,
+            [req.params.id, userId, positionId]);
         await pool.query('INSERT INTO audit_logs (user_id, action) VALUES ($1, $2)', [req.user.id, `Added user ${userId} to office ${req.params.id}`]);
         res.status(201).json({ message: 'Officer added.' });
     } catch (err) {
@@ -208,6 +224,109 @@ router.delete('/:id/members/:userId', authenticateToken, requireHeadOrAdmin, asy
         res.status(500).json({ message: 'Could not remove the officer.' });
     } finally {
         client.release();
+    }
+});
+
+// ── Head (or admin): positions ──────────────────────────────────────────────
+
+/** Would making `positionId` report to `reportsToId` create a loop (A reports to B reports to A)? */
+const reportingLoop = async (positionId, reportsToId) => {
+    let current = reportsToId;
+    for (let hops = 0; current && hops < 50; hops++) {
+        if (current === positionId) return true;
+        current = (await pool.query('SELECT reports_to_id FROM office_positions WHERE id = $1', [current])).rows[0]?.reports_to_id;
+    }
+    return false;
+};
+
+const checkReportsTo = async (officeId, positionId, reportsToId) => {
+    if (!reportsToId) return null;
+    const r = await pool.query('SELECT 1 FROM office_positions WHERE id = $1 AND office_id = $2', [reportsToId, officeId]);
+    if (!r.rows.length) return 'A position can only report to another position in the same office.';
+    if (positionId && await reportingLoop(positionId, reportsToId)) return 'That would make the positions report to each other in a loop.';
+    return null;
+};
+
+router.post('/:id/positions', authenticateToken, requireHeadOrAdmin, async (req, res) => {
+    const officeId = parseInt(req.params.id, 10);
+    const name = String(req.body.name || '').trim();
+    const reportsTo = req.body.reports_to_id ? parseInt(req.body.reports_to_id, 10) : null;
+    if (!name) return res.status(400).json({ message: 'Give the position a name, such as Deputy or Cashier.' });
+    try {
+        const problem = await checkReportsTo(officeId, null, reportsTo);
+        if (problem) return res.status(400).json({ message: problem });
+        const r = await pool.query('INSERT INTO office_positions (office_id, name, reports_to_id) VALUES ($1, $2, $3) RETURNING *',
+            [officeId, name, reportsTo]);
+        await pool.query('INSERT INTO audit_logs (user_id, action) VALUES ($1, $2)', [req.user.id, `Position created in office ${officeId}: ${name}`]);
+        res.status(201).json(r.rows[0]);
+    } catch (err) {
+        if (err.code === '23505') return res.status(400).json({ message: `This office already has a "${name}" position.` });
+        console.error('Create position failed:', err);
+        res.status(500).json({ message: 'Could not create the position.' });
+    }
+});
+
+router.put('/:id/positions/:positionId', authenticateToken, requireHeadOrAdmin, async (req, res) => {
+    const officeId = parseInt(req.params.id, 10);
+    const positionId = parseInt(req.params.positionId, 10);
+    try {
+        const current = (await pool.query('SELECT * FROM office_positions WHERE id = $1 AND office_id = $2', [positionId, officeId])).rows[0];
+        if (!current) return res.status(404).json({ message: 'Position not found.' });
+        const name = req.body.name !== undefined ? String(req.body.name).trim() : current.name;
+        if (!name) return res.status(400).json({ message: 'Give the position a name.' });
+        const reportsTo = req.body.reports_to_id !== undefined ? (parseInt(req.body.reports_to_id, 10) || null) : current.reports_to_id;
+        const problem = await checkReportsTo(officeId, positionId, reportsTo);
+        if (problem) return res.status(400).json({ message: problem });
+        const r = await pool.query('UPDATE office_positions SET name = $1, reports_to_id = $2 WHERE id = $3 RETURNING *', [name, reportsTo, positionId]);
+        res.json(r.rows[0]);
+    } catch (err) {
+        if (err.code === '23505') return res.status(400).json({ message: 'This office already has a position with that name.' });
+        console.error('Update position failed:', err);
+        res.status(500).json({ message: 'Could not update the position.' });
+    }
+});
+
+router.delete('/:id/positions/:positionId', authenticateToken, requireHeadOrAdmin, async (req, res) => {
+    const officeId = parseInt(req.params.id, 10);
+    const positionId = parseInt(req.params.positionId, 10);
+    try {
+        const used = await pool.query(
+            `SELECT name FROM workflows w, jsonb_array_elements(COALESCE(w.flow_structure::jsonb->'nodes', '[]'::jsonb)) n
+             WHERE n->'data'->>'officePosition' = 'position' AND n->'data'->>'positionId' = $1::text LIMIT 1`,
+            [positionId]
+        );
+        if (used.rows.length) {
+            return res.status(409).json({ message: `The workflow "${used.rows[0].name}" sends steps to this position. Change it first.` });
+        }
+        const waiting = await pool.query("SELECT COUNT(*)::int AS n FROM documents WHERE status = 'Pending' AND current_position_id = $1", [positionId]);
+        if (waiting.rows[0].n) return res.status(409).json({ message: `${waiting.rows[0].n} document(s) are waiting for this position.` });
+        const r = await pool.query('DELETE FROM office_positions WHERE id = $1 AND office_id = $2 RETURNING name', [positionId, officeId]);
+        if (!r.rows.length) return res.status(404).json({ message: 'Position not found.' });
+        await pool.query('INSERT INTO audit_logs (user_id, action) VALUES ($1, $2)', [req.user.id, `Position removed from office ${officeId}: ${r.rows[0].name}`]);
+        res.json({ message: `Position "${r.rows[0].name}" removed.` });
+    } catch (err) {
+        console.error('Delete position failed:', err);
+        res.status(500).json({ message: 'Could not remove the position.' });
+    }
+});
+
+// Give an officer a position (or none)
+router.put('/:id/members/:userId', authenticateToken, requireHeadOrAdmin, async (req, res) => {
+    const officeId = parseInt(req.params.id, 10);
+    const positionId = req.body.position_id ? parseInt(req.body.position_id, 10) : null;
+    try {
+        if (positionId && !(await pool.query('SELECT 1 FROM office_positions WHERE id = $1 AND office_id = $2', [positionId, officeId])).rows.length) {
+            return res.status(400).json({ message: 'That position is not in this office.' });
+        }
+        const r = await pool.query('UPDATE office_members SET position_id = $1 WHERE office_id = $2 AND user_id = $3 RETURNING user_id',
+            [positionId, officeId, req.params.userId]);
+        if (!r.rows.length) return res.status(404).json({ message: 'That person is not an officer here.' });
+        await pool.query('INSERT INTO audit_logs (user_id, action) VALUES ($1, $2)',
+            [req.user.id, `Set position of user ${req.params.userId} in office ${officeId} to ${positionId || 'none'}`]);
+        res.json({ message: 'Position updated.' });
+    } catch (err) {
+        console.error('Set position failed:', err);
+        res.status(500).json({ message: 'Could not update the position.' });
     }
 });
 
@@ -247,9 +366,13 @@ const isHeadStep = async (db, doc, nodeId) => {
 
 const membership = async (db, userId) => {
     const r = await db.query(
-        `SELECT office_id AS id, FALSE AS head FROM office_members WHERE user_id = $1
-         UNION ALL SELECT id, TRUE FROM offices WHERE head_id = $1`, [userId]);
-    return { ids: r.rows.map((x) => x.id), heads: r.rows.filter((x) => x.head).map((x) => x.id) };
+        `SELECT office_id AS id, FALSE AS head, position_id FROM office_members WHERE user_id = $1
+         UNION ALL SELECT id, TRUE, NULL FROM offices WHERE head_id = $1`, [userId]);
+    return {
+        ids: r.rows.map((x) => x.id),
+        heads: r.rows.filter((x) => x.head).map((x) => x.id),
+        positions: r.rows.filter((x) => x.position_id).map((x) => x.position_id),
+    };
 };
 
 const changeClaim = (mode) => async (req, res) => {
@@ -262,14 +385,16 @@ const changeClaim = (mode) => async (req, res) => {
             return res.status(404).json({ message: 'This document is not waiting for review.' });
         }
         const me = await membership(client, req.user.id);
-        const canClaim = (officeId, assigneeId) => me.ids.includes(officeId) && !assigneeId;
+        // A step for one position can only be claimed by its holders (or the head)
+        const canClaim = (officeId, assigneeId, positionId) => !assigneeId && me.ids.includes(officeId)
+            && (!positionId || me.positions.includes(positionId) || me.heads.includes(officeId));
         const canRelease = (officeId, assigneeId) => assigneeId && (assigneeId === req.user.id || me.heads.includes(officeId));
         const allowed = mode === 'claim' ? canClaim : canRelease;
         const newAssignee = mode === 'claim' ? req.user.id : null;
 
         if (Array.isArray(doc.parallel_branch_data)) {
             const branches = doc.parallel_branch_data.map((b) => ({ ...b }));
-            const i = branches.findIndex((b) => b.status === 'Pending' && b.officeId && allowed(b.officeId, b.assigneeId));
+            const i = branches.findIndex((b) => b.status === 'Pending' && b.officeId && allowed(b.officeId, b.assigneeId, b.positionId));
             if (i === -1) {
                 await client.query('ROLLBACK');
                 return res.status(409).json({ message: mode === 'claim' ? 'Nothing to claim here: it is taken or not in your office.' : 'You have not claimed this document.' });
@@ -281,7 +406,7 @@ const changeClaim = (mode) => async (req, res) => {
             branches[i].assigneeId = newAssignee;
             await client.query('UPDATE documents SET parallel_branch_data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [JSON.stringify(branches), doc.id]);
         } else {
-            if (!doc.current_office_id || !allowed(doc.current_office_id, doc.current_assignee_id)) {
+            if (!doc.current_office_id || !allowed(doc.current_office_id, doc.current_assignee_id, doc.current_position_id)) {
                 await client.query('ROLLBACK');
                 return res.status(409).json({ message: mode === 'claim' ? 'Someone in your office has already claimed it, or it is not in your office.' : 'You have not claimed this document.' });
             }

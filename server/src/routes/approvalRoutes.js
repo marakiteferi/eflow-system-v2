@@ -361,7 +361,7 @@ router.post('/reject', authenticateToken, async (req, res) => {
 
         await client.query(
             `UPDATE documents SET status = 'Rejected', current_assignee_id = NULL, current_role_id = NULL,
-             current_department_id = NULL, current_office_id = NULL, parallel_branch_data = NULL, resume_at = NULL, updated_at = CURRENT_TIMESTAMP
+             current_department_id = NULL, current_office_id = NULL, current_position_id = NULL, parallel_branch_data = NULL, resume_at = NULL, updated_at = CURRENT_TIMESTAMP
              WHERE id = $1`,
             [documentId]
         );

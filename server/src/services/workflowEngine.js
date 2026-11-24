@@ -38,33 +38,49 @@ const officeHead = async (db, officeId) => {
     return r.rows[0]?.head_id || null;
 };
 
-/** Everyone who works from an office's queue: its officers and its head. */
-const officeStaff = async (db, officeId) => {
-    if (!officeId) return [];
+/** People holding a position in an office (active accounts only). */
+const positionHolders = async (db, positionId) => {
+    if (!positionId) return [];
     const r = await db.query(
-        `SELECT user_id AS id FROM office_members WHERE office_id = $1
-         UNION SELECT head_id FROM offices WHERE id = $1 AND head_id IS NOT NULL`,
-        [officeId]
+        `SELECT m.user_id AS id FROM office_members m JOIN users u ON u.id = m.user_id
+         WHERE m.position_id = $1 AND COALESCE(u.is_active, TRUE) ORDER BY u.name`,
+        [positionId]
     );
     return r.rows.map((x) => x.id);
 };
 
-/** Offices a user belongs to, and the ones they head. */
+/**
+ * Everyone who works from an office's queue: its officers and its head.
+ * For a step meant for one position, only the holders of that position and the head.
+ */
+const officeStaff = async (db, officeId, positionId = null) => {
+    if (!officeId) return [];
+    const r = await db.query(
+        `SELECT user_id AS id FROM office_members WHERE office_id = $1 AND ($2::int IS NULL OR position_id = $2)
+         UNION SELECT head_id FROM offices WHERE id = $1 AND head_id IS NOT NULL`,
+        [officeId, positionId]
+    );
+    return r.rows.map((x) => x.id);
+};
+
+/** Offices a user belongs to, the ones they head, and the positions they hold. */
 const loadOfficeMembership = async (db, userId) => {
     const r = await db.query(
-        `SELECT office_id AS id, FALSE AS is_head FROM office_members WHERE user_id = $1
-         UNION ALL SELECT id, TRUE FROM offices WHERE head_id = $1`,
+        `SELECT office_id AS id, FALSE AS is_head, position_id FROM office_members WHERE user_id = $1
+         UNION ALL SELECT id, TRUE, NULL FROM offices WHERE head_id = $1`,
         [userId]
     );
     return {
         officeIds: [...new Set(r.rows.map((x) => x.id))],
         headOfOfficeIds: r.rows.filter((x) => x.is_head).map((x) => x.id),
+        positionIds: r.rows.filter((x) => x.position_id).map((x) => x.position_id),
     };
 };
 
 /**
  * Who should act on a task node:
- *  - "office": the office head, or the office's shared queue (any officer can claim it).
+ *  - "office": the office head, the office's shared queue (any officer can claim it), or the
+ *    queue of one position in the office (only its holders can claim it; the head if nobody holds it).
  *  - "role_based": the active user with that role (and department) who has the fewest pending documents.
  *    If nobody holds the role, the task stays open to the role as a pool.
  *  - otherwise: the specific user configured on the node.
@@ -77,9 +93,17 @@ const resolveTaskAssignment = async (db, node, submitterId) => {
         const officeId = data.officeId ? parseInt(data.officeId, 10) : null;
         if (data.officePosition === 'head') {
             const head = await officeHead(db, officeId);
-            return { assigneeId: await resolveDelegate(db, head), roleId: null, departmentId: null, officeId };
+            return { assigneeId: await resolveDelegate(db, head), roleId: null, departmentId: null, officeId, positionId: null };
         }
-        return { assigneeId: null, roleId: null, departmentId: null, officeId };
+        if (data.officePosition === 'position' && data.positionId) {
+            const positionId = parseInt(data.positionId, 10);
+            if ((await positionHolders(db, positionId)).length === 0) {
+                // Nobody holds the position right now: the head takes it
+                return { assigneeId: await resolveDelegate(db, await officeHead(db, officeId)), roleId: null, departmentId: null, officeId, positionId };
+            }
+            return { assigneeId: null, roleId: null, departmentId: null, officeId, positionId };
+        }
+        return { assigneeId: null, roleId: null, departmentId: null, officeId, positionId: null };
     }
     if (data.assignmentStrategy === 'role_based') {
         const roleId = data.roleId ? parseInt(data.roleId, 10) : null;
@@ -183,6 +207,7 @@ const emptyState = () => ({
     current_role_id: null,
     current_department_id: null,
     current_office_id: null,
+    current_position_id: null,
     parallel_branch_data: null,
     resume_at: null,
     delegation_sla_deadline: null,
@@ -198,6 +223,7 @@ const buildBranch = async (db, branchOutcome, parallelNodeId, doc) => {
             roleId: a.roleId,
             departmentId: a.departmentId,
             officeId: a.officeId || null,
+            positionId: a.positionId || null,
             status: 'Pending',
             deadline: deadlineFor(branchOutcome.node),
         };
@@ -231,9 +257,10 @@ const applyOutcome = async (db, doc, flow, outcome, ctx = {}) => {
         state.current_role_id = a.roleId;
         state.current_department_id = a.departmentId;
         state.current_office_id = a.officeId || null;
+        state.current_position_id = a.positionId || null;
         state.delegation_sla_deadline = deadlineFor(outcome.node);
         if (a.assigneeId) assigned.push(a.assigneeId);
-        else if (a.officeId) assigned.push(...(await officeStaff(db, a.officeId)));
+        else if (a.officeId) assigned.push(...(await officeStaff(db, a.officeId, a.positionId)));
         return { state, assigned, completed: false };
     }
 
@@ -259,7 +286,7 @@ const applyOutcome = async (db, doc, flow, outcome, ctx = {}) => {
         for (const b of branches) {
             if (b.status !== 'Pending') continue;
             if (b.assigneeId) assigned.push(b.assigneeId);
-            else if (b.officeId) assigned.push(...(await officeStaff(db, b.officeId)));
+            else if (b.officeId) assigned.push(...(await officeStaff(db, b.officeId, b.positionId)));
         }
         return { state, assigned, completed: false };
     }
@@ -275,7 +302,7 @@ const saveState = async (db, documentId, state) => {
             status = $1, current_node_id = $2, current_assignee_id = $3, current_role_id = $4,
             current_department_id = $5, parallel_branch_data = $6, resume_at = $7,
             delegation_sla_deadline = $8, sla_reminder_sent = FALSE, sla_warning_sent = FALSE,
-            sla_escalated = FALSE, current_office_id = $10, updated_at = CURRENT_TIMESTAMP
+            sla_escalated = FALSE, current_office_id = $10, current_position_id = $11, updated_at = CURRENT_TIMESTAMP
          WHERE id = $9`,
         [
             state.status,
@@ -288,6 +315,7 @@ const saveState = async (db, documentId, state) => {
             state.delegation_sla_deadline,
             documentId,
             state.current_office_id || null,
+            state.current_position_id || null,
         ]
     );
 };
@@ -320,13 +348,16 @@ const startDocument = async (db, doc, flow, ctx = {}) => {
 /** Find the parallel branch (index) this user may act on, or -1. Super admins may act on any pending branch. */
 const inOffice = (user, officeId) => Boolean(officeId) && (user.officeIds || []).includes(officeId);
 const headsOffice = (user, officeId) => Boolean(officeId) && (user.headOfOfficeIds || []).includes(officeId);
+const holdsPosition = (user, positionId) => (user.positionIds || []).includes(positionId);
 
 /**
- * Whether `user` holds a step described by (assigneeId, roleId, departmentId, officeId).
- * Office steps: once claimed, the claimer (or the office head); before that, anyone in the office.
+ * Whether `user` holds a step described by (assigneeId, roleId, departmentId, officeId, positionId).
+ * Office steps: once claimed, the claimer (or the office head); before that, anyone in the office,
+ * or, for a step meant for one position, the holders of that position and the head.
  */
-const holdsStep = (user, { assigneeId, roleId, departmentId, officeId }) => {
+const holdsStep = (user, { assigneeId, roleId, departmentId, officeId, positionId }) => {
     if (assigneeId) return assigneeId === user.id || headsOffice(user, officeId);
+    if (officeId && positionId) return holdsPosition(user, positionId) || headsOffice(user, officeId);
     if (officeId) return inOffice(user, officeId);
     return roleId != null && roleId === user.role_id && (!departmentId || departmentId === user.department_id);
 };
@@ -350,6 +381,7 @@ const canActOn = (doc, user) => {
         roleId: doc.current_role_id,
         departmentId: doc.current_department_id,
         officeId: doc.current_office_id,
+        positionId: doc.current_position_id,
     });
 };
 
@@ -377,9 +409,10 @@ const advanceAfterApproval = async (db, doc, flow, user) => {
             branches[idx] = {
                 parallelNodeId: branch.parallelNodeId, nodeId: next.node.id, status: 'Pending',
                 assigneeId: a.assigneeId, roleId: a.roleId, departmentId: a.departmentId, officeId: a.officeId || null,
+                positionId: a.positionId || null,
                 deadline: deadlineFor(next.node), // each step in a branch gets its own deadline
             };
-            const who = a.assigneeId ? [a.assigneeId] : await officeStaff(db, a.officeId);
+            const who = a.assigneeId ? [a.assigneeId] : await officeStaff(db, a.officeId, a.positionId);
             await notifyAssigned(db, doc, who, 'Parallel review required');
         } else {
             branches[idx] = { ...branch, status: 'Approved', joinNodeId: next.kind === 'join' ? next.node.id : branch.joinNodeId || null };
@@ -430,5 +463,6 @@ module.exports = {
     findBranchForUser,
     officeHead,
     officeStaff,
+    positionHolders,
     loadOfficeMembership,
 };

@@ -16,6 +16,20 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// A deactivated account is signed out on its next request
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401 && /deactivated/i.test(err.response?.data?.message || '')) {
+      localStorage.removeItem('user');
+      localStorage.removeItem('token');
+      localStorage.removeItem('fileToken');
+      if (window.location.pathname !== '/login') window.location.assign('/login');
+    }
+    return Promise.reject(err);
+  }
+);
+
 export default api;
 
 /**

@@ -83,28 +83,50 @@ const slaActionFor = (slot, node, now = Date.now()) => {
     return null;
 };
 
+/** The first available holder of the position that `positionId` reports to, if any. */
+const reportsToHolder = async (db, positionId, lateUserId) => {
+    if (!positionId) return null;
+    const up = (await db.query('SELECT reports_to_id FROM office_positions WHERE id = $1', [positionId])).rows[0]?.reports_to_id;
+    for (const holder of await engine.positionHolders(db, up)) {
+        const who = await engine.resolveDelegate(db, holder);
+        if (who && who !== lateUserId) return who;
+    }
+    return null;
+};
+
 /**
- * Who a late step goes to: the target set on the step if there is one, otherwise the head
- * of the office the step belongs to (or of the reviewer's office). Nobody if the head is
- * the one who is late.
+ * Who a late step goes to, going up the office:
+ *  1. the target set on the step, if there is one;
+ *  2. whoever holds the position the step's position (or the late reviewer's position) reports to,
+ *     for example a Records Officer's work goes to the Deputy;
+ *  3. the head of the office the step belongs to (or of the reviewer's office).
+ * Nobody if the head is the one who is late.
  */
 const escalationTarget = async (db, node, slot) => {
     if (node?.data?.escalationUserId) return parseInt(node.data.escalationUserId, 10);
     let officeId = slot.officeId || (node?.data?.assignmentStrategy === 'office' ? parseInt(node.data.officeId, 10) : null);
-    if (!officeId && slot.assigneeId) {
+    let positionId = slot.positionId || null;
+    if (slot.assigneeId) {
+        // The late reviewer's own position, in this office or (for a named person) their first office with a head
         const r = await db.query(
-            `SELECT o.id FROM office_members m JOIN offices o ON o.id = m.office_id
-             WHERE m.user_id = $1 AND o.head_id IS NOT NULL AND o.head_id <> $1 ORDER BY o.id LIMIT 1`,
-            [slot.assigneeId]
+            `SELECT o.id, m.position_id FROM office_members m JOIN offices o ON o.id = m.office_id
+             WHERE m.user_id = $1 AND ($2::int IS NULL OR o.id = $2) AND o.head_id IS NOT NULL AND o.head_id <> $1
+             ORDER BY o.id LIMIT 1`,
+            [slot.assigneeId, officeId]
         );
-        officeId = r.rows[0]?.id || null;
+        if (r.rows[0]) {
+            officeId = officeId || r.rows[0].id;
+            positionId = positionId || r.rows[0].position_id;
+        }
     }
+    const up = await reportsToHolder(db, positionId, slot.assigneeId);
+    if (up) return up;
     const head = await engine.resolveDelegate(db, await engine.officeHead(db, officeId));
     return head && head !== slot.assigneeId ? head : null;
 };
 
 /** The people to remind: the reviewer, or everyone in the office while nobody has claimed it. */
-const recipients = async (db, slot) => (slot.assigneeId ? [slot.assigneeId] : engine.officeStaff(db, slot.officeId));
+const recipients = async (db, slot) => (slot.assigneeId ? [slot.assigneeId] : engine.officeStaff(db, slot.officeId, slot.positionId));
 
 /** Send the alert or perform the escalation for one slot. Returns the slot's new fields. */
 const applySlaAction = async (db, doc, slot, action) => {
@@ -181,6 +203,7 @@ const checkDocumentSla = async (db, doc, flow) => {
         warningSent: doc.sla_warning_sent,
         escalated: doc.sla_escalated,
         officeId: doc.current_office_id,
+        positionId: doc.current_position_id,
     };
     const node = getNode(flow, doc.current_node_id);
     const action = slaActionFor(slot, node);
