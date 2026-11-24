@@ -11,7 +11,7 @@ import AdminOverview from '../components/admin/AdminOverview';
 import PeopleManager from '../components/admin/PeopleManager';
 import PermissionsPanel from '../components/admin/PermissionsPanel';
 import AuditLog from '../components/admin/AuditLog';
-import { PageHeader } from '../components/ui';
+import { PageHeader, Modal, Button, Badge } from '../components/ui';
 import { can, hasAnyAdminPower, accountType } from '../access';
 
 const Dashboard = () => {
@@ -62,13 +62,13 @@ const Dashboard = () => {
     setTimeout(() => setToastMessage({ type: '', text: '' }), 4000);
   };
 
-  // NEW: Checklist Modal States
+  // Review step before signing: the step's required checklist and its decision outcomes
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [currentChecklist, setCurrentChecklist] = useState([]);
+  const [currentOutcomes, setCurrentOutcomes] = useState([]);
+  const [chosenOutcome, setChosenOutcome] = useState('');
+  const [approvalNote, setApprovalNote] = useState('');
   const [checkedItems, setCheckedItems] = useState([]);
-
-  // NEW: Local tag state for the review queue (key = docId, value = tag string)
-  const [localTags, setLocalTags] = useState({});
 
   // NEW: In-app notifications
   const [notifications, setNotifications] = useState([]);
@@ -133,37 +133,41 @@ const Dashboard = () => {
     navigate('/login');
   };
 
-  // ==========================================
-  // NEW: The Checklist Lock Engine
-  // ==========================================
+  // The workflow step this user is working on for `doc` (their own branch of a parallel review)
+  const myStepNode = (doc) => {
+    if (!doc?.workflow_id) return null;
+    const wf = workflows.find(w => w.id === doc.workflow_id);
+    if (!wf) return null;
+    const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
+    let nodeId = doc.current_node_id;
+    if (Array.isArray(doc.parallel_branch_data)) {
+      const pending = doc.parallel_branch_data.filter(b => b.status === 'Pending');
+      const myOfficeIds = myOffices.map(o => o.id);
+      const branch = pending.find(b => b.assigneeId === user?.id)
+        || pending.find(b => !b.assigneeId && b.officeId && myOfficeIds.includes(b.officeId))
+        || pending.find(b => b.roleId != null && b.roleId === user?.role_id)
+        || pending[0];
+      nodeId = branch?.nodeId;
+    }
+    return (flowData?.nodes || []).find(n => n.id === nodeId) || null;
+  };
+  const listOf = (v) => (Array.isArray(v) ? v : String(v || '').split(',')).map(x => String(x).trim()).filter(Boolean);
+
+  // Approving: confirm the step's checklist and choose its outcome first (the server checks both too)
   const handleRequestApproval = async (docId) => {
     const doc = documents.find(d => d.id === docId);
     setSelectedDocId(docId);
-
-    let checklist = [];
-
-    // Check if this document's current node has a mandatory checklist
-    if (doc && doc.workflow_id && doc.current_node_id) {
-      const wf = workflows.find(w => w.id === doc.workflow_id);
-      if (wf) {
-        const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
-        const currentNode = (flowData.nodes || []).find(n => n.id === doc.current_node_id);
-
-        if (currentNode && currentNode.data?.checklist && currentNode.data.checklist.length > 0) {
-          checklist = currentNode.data.checklist;
-        }
-      }
-    }
-
-    if (checklist.length > 0) {
-      // If a checklist exists, lock the approval and open the checklist modal
-      setCurrentChecklist(checklist);
-      setCheckedItems([]); // Reset checked boxes
-      setShowChecklistModal(true);
-    } else {
-      // If no checklist exists, proceed straight to OTP
-      proceedToOtp(docId);
-    }
+    const step = myStepNode(doc);
+    const checklist = listOf(step?.data?.checklist);
+    const outcomes = listOf(step?.data?.allowedTags);
+    setCurrentChecklist(checklist);
+    setCurrentOutcomes(outcomes);
+    setCheckedItems([]);
+    const preset = doc?.metadata_tag || '';
+    setChosenOutcome(outcomes.find(o => o.toLowerCase() === String(preset).toLowerCase()) || '');
+    setApprovalNote('');
+    if (checklist.length > 0 || outcomes.length > 0) setShowChecklistModal(true);
+    else proceedToOtp(docId);
   };
 
   const proceedToOtp = async (docId) => {
@@ -186,7 +190,10 @@ const Dashboard = () => {
     setIsApproving(true);
     const signatureDrawing = savedSignature || null;
     try {
-      await api.post('/approvals/approve', { documentId: selectedDocId, otp: otpInput, comments: 'Verified by Staff', signatureDrawing });
+      await api.post('/approvals/approve', {
+        documentId: selectedDocId, otp: otpInput, comments: approvalNote.trim() || 'Verified by Staff', signatureDrawing,
+        checklist: currentChecklist, outcome: chosenOutcome || undefined,
+      });
       setShowOtpModal(false);
       setOtpInput('');
       fetchData();
@@ -263,37 +270,13 @@ const Dashboard = () => {
     return titleMatch || textMatch || statusMatch || idMatch || workflowMatch;
   });
 
-  // Helper: get allowed tags array from the current workflow node for a given document
-  const getNodeAllowedTags = (doc) => {
-    if (!doc.workflow_id || !doc.current_node_id) return [];
-    const wf = workflows.find(w => w.id === doc.workflow_id);
-    if (!wf) return [];
-    const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
-    const currentNode = (flowData.nodes || []).find(n => n.id === doc.current_node_id);
-    if (!currentNode?.data?.allowedTags) return [];
-    return currentNode.data.allowedTags.split(',').map(t => t.trim()).filter(Boolean);
-  };
+  // The outcomes the reviewer can choose at this step (e.g. Undergraduate / Postgraduate)
+  const getNodeAllowedTags = (doc) => listOf(myStepNode(doc)?.data?.allowedTags);
 
-  // Helper: get allowed actions array from the current workflow node for a given document
+  // Which of approve / send back / attach files the step allows
   const getNodeAllowedActions = (doc) => {
-    if (!doc.workflow_id || !doc.current_node_id) return ['approve', 'reject'];
-    const wf = workflows.find(w => w.id === doc.workflow_id);
-    if (!wf) return ['approve', 'reject'];
-    const flowData = typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure;
-    const currentNode = (flowData.nodes || []).find(n => n.id === doc.current_node_id);
-    return currentNode?.data?.allowedActions || ['approve', 'reject'];
-  };
-
-  // Handler: set a tag on the document via the new backend endpoint  
-  const handleSetTag = async (docId, tag) => {
-    setLocalTags(prev => ({ ...prev, [docId]: tag }));
-    if (!tag) return;
-    try {
-      await api.patch(`/documents/${docId}/tag`, { tag });
-    } catch (err) {
-      console.error('Failed to set tag:', err);
-      showToast('error', err.response?.data?.message || 'Failed to set tag.');
-    }
+    const allowed = myStepNode(doc)?.data?.allowedActions;
+    return Array.isArray(allowed) ? allowed : ['approve', 'reject'];
   };
 
   const renderDashboardView = () => {
@@ -459,7 +442,8 @@ const Dashboard = () => {
                     const officeStep = officeStepFor(doc);
                     // Someone else in the office has claimed it: show it, but leave the actions to them
                     const allowedActions = officeStep && !officeStep.canAct ? [] : getNodeAllowedActions(doc);
-                    const currentTag = localTags[doc.id] ?? (doc.metadata_tag || '');
+                    const currentTag = doc.metadata_tag || '';
+                    const stepChecklist = listOf(myStepNode(doc)?.data?.checklist);
                     return (
                       <tr key={doc.id} className="hover:bg-gray-50 transition-colors group">
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-medium">#TSK-{doc.id.toString().substring(0, 4)}</td>
@@ -481,20 +465,13 @@ const Dashboard = () => {
                             </p>
                           )}
 
-                          {/* Tag Dropdown implementation embedded in flow */}
-                          <div className="mt-2 flex items-center gap-2">
-                            {currentTag && <span className="px-2 py-0.5 text-[10px] uppercase tracking-wider font-bold rounded bg-gray-100 text-gray-600">🏷️ {currentTag}</span>}
-                            {allowedTags.length > 0 && (
-                              <select
-                                value={currentTag}
-                                onChange={(e) => handleSetTag(doc.id, e.target.value)}
-                                className="text-[10px] uppercase font-bold text-gray-600 border border-gray-200 rounded py-0.5 px-1 bg-white focus:outline-none focus:border-blue-500"
-                              >
-                                <option value="">+ SET TAG</option>
-                                {allowedTags.map(tag => <option key={tag} value={tag}>{tag}</option>)}
-                              </select>
-                            )}
-                          </div>
+                          {(currentTag || allowedTags.length > 0 || stepChecklist.length > 0) && (
+                            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                              {currentTag && <Badge tone="indigo" title="Outcome chosen at an earlier step">Outcome: {currentTag}</Badge>}
+                              {allowedTags.length > 0 && <Badge tone="amber" title={allowedTags.join(' / ')}>Decide: {allowedTags.join(' / ')}</Badge>}
+                              {stepChecklist.length > 0 && <Badge tone="gray">{stepChecklist.length}-item checklist</Badge>}
+                            </div>
+                          )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-gray-500">{new Date(doc.created_at).toLocaleDateString()}</td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -986,7 +963,7 @@ const Dashboard = () => {
                   </div>
                 )}
                 {activeTab === 'workflows' && (
-                  <div className="h-full min-h-[640px]"><WorkflowBuilder /></div>
+                  <WorkflowBuilder onExit={() => go('dashboard')} />
                 )}
                 {activeTab === 'offices' && (
                   <div className="space-y-6">
@@ -1005,43 +982,73 @@ const Dashboard = () => {
           </div>
         </main>
 
-        {/* MODAL 1: MANDATORY CHECKLIST */}
-        {showChecklistModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-md border-t-4 border-amber-500">
-              <h3 className="text-xl font-black text-gray-800 mb-2">Mandatory Tasks</h3>
-              <p className="text-sm text-gray-600 mb-4">You must complete all checklist items to unlock approval.</p>
+        {/* MODAL 1: REVIEW BEFORE SIGNING (outcome + required checklist) */}
+        {showChecklistModal && (() => {
+          const ready = checkedItems.length === currentChecklist.length && (currentOutcomes.length === 0 || chosenOutcome);
+          const doc = documents.find(d => d.id === selectedDocId);
+          return (
+            <Modal
+              title="Review before signing"
+              subtitle={doc ? doc.title : undefined}
+              onClose={() => setShowChecklistModal(false)}
+              footer={<>
+                <Button variant="secondary" onClick={() => setShowChecklistModal(false)}>Cancel</Button>
+                <Button onClick={() => proceedToOtp(selectedDocId)} disabled={!ready || isRequestingOtp}>
+                  {isRequestingOtp ? 'Sending code...' : 'Continue to sign'}
+                </Button>
+              </>}
+            >
+              {currentOutcomes.length > 0 && (
+                <div className="mb-5">
+                  <p className="text-sm font-semibold text-gray-900">Decision</p>
+                  <p className="text-xs text-gray-500 mb-2">Choose the outcome of this step. Later steps can route the document on it.</p>
+                  <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Outcome">
+                    {currentOutcomes.map(o => (
+                      <button key={o} type="button" role="radio" aria-checked={chosenOutcome === o}
+                        onClick={() => setChosenOutcome(o)}
+                        className={`px-3 py-1.5 rounded-full text-sm font-semibold border transition-colors ${chosenOutcome === o ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-gray-300 text-gray-700 hover:border-indigo-400'}`}>
+                        {o}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-              <div className="space-y-3 mb-6">
-                {currentChecklist.map((item, idx) => (
-                  <label key={idx} className="flex items-start gap-3 p-3 bg-gray-50 border border-gray-200 rounded cursor-pointer hover:bg-gray-100 transition-colors">
-                    <input
-                      type="checkbox"
-                      className="mt-1 w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                      checked={checkedItems.includes(idx)}
-                      onChange={(e) => {
-                        if (e.target.checked) setCheckedItems([...checkedItems, idx]);
-                        else setCheckedItems(checkedItems.filter(i => i !== idx));
-                      }}
-                    />
-                    <span className="text-sm font-medium text-gray-800 leading-snug">{item}</span>
-                  </label>
-                ))}
-              </div>
+              {currentChecklist.length > 0 && (
+                <div className="mb-5">
+                  <div className="flex items-baseline justify-between mb-2">
+                    <p className="text-sm font-semibold text-gray-900">Required checks</p>
+                    <span className="text-xs text-gray-500">{checkedItems.length} of {currentChecklist.length} confirmed</span>
+                  </div>
+                  <div className="space-y-2">
+                    {currentChecklist.map((item, idx) => (
+                      <label key={idx} className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${checkedItems.includes(idx) ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'}`}>
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
+                          checked={checkedItems.includes(idx)}
+                          onChange={(e) => {
+                            if (e.target.checked) setCheckedItems([...checkedItems, idx]);
+                            else setCheckedItems(checkedItems.filter(i => i !== idx));
+                          }}
+                        />
+                        <span className="text-sm text-gray-800 leading-snug">{item}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">Your confirmations are saved with your signature in the document history.</p>
+                </div>
+              )}
 
-              <div className="flex justify-end gap-3">
-                <button onClick={() => setShowChecklistModal(false)} className="px-4 py-2 text-gray-600 font-bold hover:bg-gray-100 rounded">Cancel</button>
-                <button
-                  onClick={() => proceedToOtp(selectedDocId)}
-                  disabled={checkedItems.length !== currentChecklist.length || isRequestingOtp}
-                  className={`px-4 py-2 rounded font-bold text-white transition-colors ${checkedItems.length === currentChecklist.length && !isRequestingOtp ? 'bg-indigo-600 hover:bg-indigo-700 shadow-md' : 'bg-gray-300 cursor-not-allowed text-gray-500'}`}
-                >
-                  {isRequestingOtp ? 'Processing...' : 'Proceed to Sign'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+              <label className="block">
+                <span className="text-sm font-semibold text-gray-900">Note (optional)</span>
+                <textarea rows="2" value={approvalNote} onChange={(e) => setApprovalNote(e.target.value)}
+                  placeholder="Anything the next reviewer should know"
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-500" />
+              </label>
+            </Modal>
+          );
+        })()}
 
         {/* MODAL 2: OTP / 2FA */}
         {showOtpModal && (
