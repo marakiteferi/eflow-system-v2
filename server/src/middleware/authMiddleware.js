@@ -8,6 +8,8 @@ const authenticateToken = (req, res, next) => {
 
     jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
         if (err) return res.status(403).json({ message: 'Invalid Token' });
+        // File tokens only open uploaded files; they can't call the API
+        if (user.purpose === 'files') return res.status(403).json({ message: 'Invalid Token' });
         
         req.user = user; // Attach the decoded user payload (id, role_id) to the request
         next();

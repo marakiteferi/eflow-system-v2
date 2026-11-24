@@ -11,11 +11,16 @@ In many universities, simple requests like a clearance form still mean walking b
 
 ## Features
 
+**Office-based routing**
+- The admin creates offices (Registrar, Library, Finance...) and appoints a head. Each head manages their own officers and sets who covers for whom while someone is away, so the admin isn't involved in day-to-day staffing.
+- Workflow steps go to an office instead of a named person: either the office's shared queue, where any officer can claim the document, or the head of the office for a sign-off. Picking a specific person or role is still available as an advanced option.
+- Late steps escalate to the head of the office automatically, so no escalation target has to be set on every step.
+
 **Visual workflow builder**
 - Drag-and-drop editor built on React Flow with seven node types: approval, condition, parallel split, merge gate, email, delay, and spawn (start another workflow when this one finishes).
 - Workflows are validated before they can be published: loops (found with a depth-first search), dangling connections, approval steps with no approver, conditions with no value and parallel splits with a single branch are all reported back in the builder.
 - Saving as a draft skips validation, and a workflow can't be edited in a way that removes a step a live document is waiting on.
-- Approvers can be a specific person, a role, or a role within the submitter's department, with per-step permissions (approve, reject, attach) and checklists.
+- Approvers can be an office (its shared queue or its head), and as advanced options a specific person, a role, or a role within the submitter's department, with per-step permissions (approve, reject, attach) and checklists.
 - Workflows can require prerequisite workflows to be completed first.
 
 **Tamper-evident approvals**
@@ -33,6 +38,8 @@ In many universities, simple requests like a clearance form still mean walking b
 
 **Access control**
 - JWT authentication with bcrypt-hashed passwords and expiring password-reset tokens.
+- Uploaded files are not public: they are served only to signed-in users allowed to see the document, using a short-lived file token that can't call the API.
+- Rate limits on sign-in, password-reset and one-time-code requests. One-time codes are stored hashed in the database and cancelled after five wrong guesses.
 - Built-in Student, Staff and Super Admin roles, plus custom roles that admins create with fine-grained permissions. Before a role is removed, its impact is analysed and the role is safely sealed.
 
 | Student portal | Staff approval queue |
@@ -113,6 +120,12 @@ Email is optional for local use. Without SMTP settings, one-time codes are shown
 | Staff | `staff2@example.com` |
 | Student | `abebe@example.com` |
 
+Two demo offices are created too: the **Registrar's Office** (head: `staff2@example.com`, officer: `staff@example.com`) and the **Library** (head: `staff@example.com`).
+
+### Running on more than one server
+
+Background jobs (delay timers and deadline checks) run inside the API by default. A database lock makes sure only one server runs them at a time, so several API servers never send the same reminder twice. To keep them out of the API entirely, set `RUN_BACKGROUND_JOBS=false` on the API servers and run `npm run worker` once. Behind a proxy such as Nginx or Render, set `TRUST_PROXY=1` so rate limits see each visitor's real address.
+
 ## Testing
 
 ```bash
@@ -121,7 +134,7 @@ npm test            # unit tests + integration tests (needs PostgreSQL)
 npm run test:unit   # unit tests only, no database needed
 ```
 
-The integration tests start the real API against a separate `eflow_test` database (created and reset automatically) and drive whole documents through it: linear, conditional and parallel routes, role-based load balancing, delegation, delays, deadline escalation, spawned workflows, clearances, permissions, and tamper detection on the signature chain. The unit tests cover the graph walker, workflow validation and the signature chain on their own.
+The integration tests start the real API against a separate `eflow_test` database (created and reset automatically) and drive whole documents through it: linear, conditional and parallel routes, role-based load balancing, delegation, delays, deadline escalation, spawned workflows, clearances, permissions, offices (claiming, cover, escalation to the head), protected file downloads, sign-in limits, and tamper detection on the signature chain. The unit tests cover the graph walker, workflow validation and the signature chain on their own.
 
 GitHub Actions runs the full suite against PostgreSQL 16 and builds the client on every push and pull request.
 
@@ -137,6 +150,7 @@ server/
   src/services/         Routing engine, workflow graph and validation, approval signing, notifications
   src/middleware/       JWT authentication and permission checks
   src/cron/             Background jobs: delay timers and deadline monitoring
+  src/worker.js         Optional stand-alone worker for those jobs
   test/                 Unit and integration tests
   db/schema.sql         Base schema
   db/migrations/        Incremental schema changes, applied in order
@@ -154,7 +168,7 @@ docs/screenshots/       Images used in this README
 
 ## Possible next steps
 
-- Moving one-time codes and background jobs to shared storage (such as Redis) so the API can run on more than one server
-- Rate limiting on login and code requests
-- Serving uploaded files through an authenticated endpoint
+- Storing uploaded files in object storage (such as S3) instead of the server's disk
+- Sending email from a queue after the database transaction, so a slow mail server never slows down approvals
+- Single sign-on with the university's accounts
 - Deployment with Docker

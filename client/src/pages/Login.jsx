@@ -26,7 +26,7 @@ const Login = () => {
       });
 
       // Pass the user data and token to the global context instead of just localStorage
-      login(response.data.user, response.data.token);
+      login(response.data.user, response.data.token, response.data.fileToken);
 
       // Now redirect to the dashboard
       navigate('/dashboard');

@@ -83,6 +83,26 @@ async function run() {
             );
         }
 
+        // Demo offices so office routing can be tried straight away (the automated tests set up their own)
+        if (process.env.NODE_ENV !== 'test') {
+            const id = async (email) => (await db.query('SELECT id FROM users WHERE email = $1', [email])).rows[0]?.id;
+            const demoOffices = [
+                { name: "Registrar's Office", description: 'Transcripts, enrolment and graduation', head: 'staff2@example.com', officers: ['staff@example.com'] },
+                { name: 'Library', description: 'Library clearance', head: 'staff@example.com', officers: [] },
+            ];
+            for (const o of demoOffices) {
+                const r = await db.query(
+                    `INSERT INTO offices (name, description, head_id) VALUES ($1, $2, $3)
+                     ON CONFLICT (name) DO NOTHING RETURNING id`,
+                    [o.name, o.description, await id(o.head)]
+                );
+                if (!r.rows[0]) continue;
+                for (const email of o.officers) {
+                    await db.query('INSERT INTO office_members (office_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [r.rows[0].id, await id(email)]);
+                }
+            }
+        }
+
         console.log('\n✅ Database ready. Demo accounts (password: ' + DEMO_PASSWORD + '):');
         DEMO_USERS.forEach((u) => console.log(`   ${u.email}`));
     } finally {

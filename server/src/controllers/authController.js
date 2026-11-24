@@ -1,5 +1,6 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const { signFileToken } = require('../middleware/fileAccess');
 
 // Initialize database connection
 const pool = require('../db');
@@ -84,6 +85,7 @@ const loginUser = async (req, res) => {
         
         res.status(200).json({ 
             token, 
+            fileToken: signFileToken(user),
             user: { 
                 id: user.id, 
                 name: user.name, 

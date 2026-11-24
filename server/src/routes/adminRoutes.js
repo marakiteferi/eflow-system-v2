@@ -19,8 +19,9 @@ const transporter = nodemailer.createTransport({
 });
 
 const pool = require('../db');
+const codes = require('../services/oneTimeCodes');
+const { codeRequestLimiter } = require('../middleware/rateLimits');
 
-const adminOtpStore = new Map();
 
 // ==========================================
 // MIDDLEWARE
@@ -234,23 +235,18 @@ router.delete('/roles/:id', authenticateToken, verifyAdmin, async (req, res) => 
 // ADMIN OTP API
 // ==========================================
 
-router.post('/request-otp', authenticateToken, verifyAdmin, async (req, res) => {
+router.post('/request-otp', authenticateToken, codeRequestLimiter, verifyAdmin, async (req, res) => {
     try {
-        const existingData = adminOtpStore.get(req.user.id);
-        if (existingData && existingData.generatedAt) {
-            const timeSinceGenerated = Date.now() - existingData.generatedAt;
-            if (timeSinceGenerated < 2 * 60 * 1000) {
-                return res.status(429).json({ message: 'Please wait 2 minutes before requesting a new code.' });
-            }
+        const issued = await codes.issueCode(req.user.id, 'admin', { cooldownMs: 2 * 60 * 1000 });
+        if (issued.tooSoon) {
+            return res.status(429).json({ message: 'Please wait 2 minutes before requesting a new code.' });
         }
-
-        const otp = crypto.randomInt(100000, 999999).toString();
-        adminOtpStore.set(req.user.id, { otp, expires: Date.now() + 5 * 60000, generatedAt: Date.now() });
+        const otp = issued.code;
 
         const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [req.user.id]);
         const { email, name } = userQuery.rows[0];
 
-        console.log(`\n🔑 DEV MODE - ADMIN OTP GENERATED: ${otp}\n`);
+        if (process.env.NODE_ENV !== 'production') console.log(`\n🔑 DEV MODE - ADMIN OTP GENERATED: ${otp}\n`);
 
         try {
             await transporter.sendMail({
@@ -325,15 +321,10 @@ router.put('/users/:id/role', authenticateToken, verifyAdmin, async (req, res) =
     const { role_id, department_id, supervisor_id, otp } = req.body;
     const userId = parseInt(req.params.id, 10);
 
-    const storedData = adminOtpStore.get(req.user.id);
-    if (!storedData || storedData.otp !== otp) {
-        return res.status(400).json({ message: 'Invalid or incorrect OTP' });
-    }
-    if (Date.now() > storedData.expires) {
-        adminOtpStore.delete(req.user.id);
-        return res.status(400).json({ message: 'OTP has expired' });
-    }
-    adminOtpStore.delete(req.user.id);
+    const codeStatus = await codes.checkCode(req.user.id, 'admin', otp);
+    if (codeStatus === 'expired') return res.status(400).json({ message: 'OTP has expired' });
+    if (codeStatus !== 'ok') return res.status(400).json({ message: 'Invalid or incorrect OTP' });
+    await codes.consumeCode(req.user.id, 'admin');
 
     // If a supervisor is being set, validate there's no cycle BEFORE writing
     if (supervisor_id) {
@@ -456,15 +447,10 @@ router.post('/users/import-preview', authenticateToken, verifyAdmin, upload.sing
 router.post('/users/import-commit', authenticateToken, verifyAdmin, async (req, res) => {
     const { validUsers, otp } = req.body;
 
-    const storedData = adminOtpStore.get(req.user.id);
-    if (!storedData || storedData.otp !== otp) {
-        return res.status(400).json({ message: 'Invalid or incorrect OTP' });
-    }
-    if (Date.now() > storedData.expires) {
-        adminOtpStore.delete(req.user.id);
-        return res.status(400).json({ message: 'OTP has expired' });
-    }
-    adminOtpStore.delete(req.user.id);
+    const codeStatus = await codes.checkCode(req.user.id, 'admin', otp);
+    if (codeStatus === 'expired') return res.status(400).json({ message: 'OTP has expired' });
+    if (codeStatus !== 'ok') return res.status(400).json({ message: 'Invalid or incorrect OTP' });
+    await codes.consumeCode(req.user.id, 'admin');
 
     if (!validUsers || !Array.isArray(validUsers) || validUsers.length === 0) {
         return res.status(400).json({ message: 'No valid users provided to import.' });

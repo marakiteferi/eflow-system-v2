@@ -17,3 +17,24 @@ api.interceptors.request.use((config) => {
 });
 
 export default api;
+
+/**
+ * URL for an uploaded file (stored as "uploads/<name>"). Files are not public: the
+ * short-lived file token from sign-in is added so <iframe> and links can open them.
+ */
+export const fileUrl = (storedPath) => {
+  if (!storedPath) return '';
+  const clean = String(storedPath).replace(/\\/g, '/').replace(/^\/+/, '');
+  const ft = localStorage.getItem('fileToken') || '';
+  return `${SERVER_URL}/${clean}?ft=${encodeURIComponent(ft)}`;
+};
+
+/** Get a new file token (after sign-in, or when an older session has none). */
+export const refreshFileToken = async () => {
+  try {
+    const res = await api.get('/auth/file-token');
+    localStorage.setItem('fileToken', res.data.fileToken);
+  } catch {
+    // Not signed in: nothing to refresh
+  }
+};

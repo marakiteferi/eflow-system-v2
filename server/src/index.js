@@ -16,6 +16,8 @@ const cors = require('cors');
 
 // 1. Initialize app FIRST
 const app = express();
+// Behind a reverse proxy (Render, Nginx...), trust it so rate limits see the real client address
+if (process.env.TRUST_PROXY) app.set('trust proxy', parseInt(process.env.TRUST_PROXY, 10) || 1);
 const PORT = process.env.PORT || 5000;
 
 // 2. Middleware
@@ -23,7 +25,9 @@ app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
 app.use(express.json());
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-app.use('/uploads', express.static(UPLOADS_DIR));
+// Uploaded files: only for signed-in users allowed to see the document (no public static folder)
+const { serveUpload } = require('./middleware/fileAccess');
+app.get('/uploads/:name', serveUpload(UPLOADS_DIR));
 // 3. Database Pool
 const pool = require('./db');
 
@@ -46,9 +50,12 @@ app.use('/api/approvals', require('./routes/approvalRoutes')); // We will build 
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/users', require('./routes/userRoutes')); // For OOO and delegation
 app.use('/api/notifications', require('./routes/notificationRoutes')); // In-app notifications
+app.use('/api/offices', require('./routes/officeRoutes')); // Offices, officers and the shared queue
 // 5. Start Server (only when run directly, so tests can import the app)
 if (require.main === module) {
-    startSlaMonitor(); // delay timers + SLA monitoring
+    // Background jobs (delay timers, deadlines) run here unless a separate worker does them:
+    // set RUN_BACKGROUND_JOBS=false on API servers and run `npm run worker` once.
+    if (process.env.RUN_BACKGROUND_JOBS !== 'false') startSlaMonitor();
     app.listen(PORT, () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
     });

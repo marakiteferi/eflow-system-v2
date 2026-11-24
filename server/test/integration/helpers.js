@@ -15,6 +15,7 @@ process.env.APPROVAL_SIGNING_SECRET = process.env.APPROVAL_SIGNING_SECRET || 'te
 process.env.DEMO_PASSWORD = 'demo1234';
 delete process.env.SMTP_HOST; // never send real email from tests
 process.env.NODE_ENV = 'test';
+process.env.RATE_LIMIT_CODES = '1000'; // tests request many codes; the limit itself is tested separately
 
 const { PDFDocument } = require('pdf-lib');
 
@@ -74,7 +75,7 @@ const api = async (method, url, { token, body, form } = {}) => {
 const login = async (email, password = 'demo1234') => {
     const r = await api('POST', '/auth/login', { body: { email, password } });
     if (r.status !== 200) throw new Error(`Login failed for ${email}: ${JSON.stringify(r.data)}`);
-    return { token: r.data.token, user: r.data.user };
+    return { token: r.data.token, fileToken: r.data.fileToken, user: r.data.user };
 };
 
 const makePdf = async (text = 'Test document') => {
@@ -131,4 +132,5 @@ module.exports = {
     setup, teardown, databaseAvailable, api, login, makePdf, createWorkflow, submit, approve, reject, getDoc,
     task, roleTask, node, edge,
     get pool() { return pool; },
+    get origin() { return baseUrl.replace(/\/api$/, ''); },
 };

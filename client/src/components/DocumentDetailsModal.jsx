@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useContext } from 'react';
-import api, { SERVER_URL } from '../api';
+import api, { fileUrl as buildFileUrl } from '../api';
 import { AuthContext } from '../context/AuthContext';
 
 // ── Progress tracker ─────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
   // 1. Safely calculate file data BEFORE the hooks using optional chaining (?)
   const cleanPath = document?.file_path?.replace(/\\/g, '/') || '';
   const finalPath = cleanPath.startsWith('/') ? cleanPath.substring(1) : cleanPath;
-  const fileUrl = finalPath ? `${SERVER_URL}/${finalPath}?v=${Date.now()}` : '';
+  const fileUrl = finalPath ? `${buildFileUrl(finalPath)}&v=${Date.now()}` : '';
   const isPdf = finalPath.toLowerCase().endsWith('.pdf');
   const isImage = finalPath.match(/\.(jpg|jpeg|png)$/i);
 
@@ -149,7 +149,8 @@ const DocumentDetailsModal = ({ document, onClose }) => {
           api.get(`/documents/${document.id}/clearances`).catch(() => ({ data: [] })),
           api.get(`/documents/${document.id}/attachments`).catch(() => ({ data: [] })),
           api.get(`/documents/${document.id}/versions`).catch(() => ({ data: [] })),
-          api.get(`/documents/${document.id}/verification-links`).catch(() => ({ data: [] })),
+          // Only the submitter manages share links for their document
+          document.submitter_id === user?.id ? api.get(`/documents/${document.id}/verification-links`).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
           api.get(`/documents/${document.id}/tag-history`).catch(() => ({ data: [] })),
           document.workflow_id ? api.get(`/workflows/${document.workflow_id}`).catch(() => ({ data: null })) : Promise.resolve({ data: null })
         ]);
@@ -167,7 +168,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
       }
     };
     fetchHistory();
-  }, [document]);
+  }, [document, user?.id]);
 
   // HOOK 2: Lock dashboard background scroll
   useEffect(() => {
@@ -435,7 +436,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                           <button 
                             onClick={(e) => {
                               const fp = c.fulfilling_file_path.replace(/\\/g, '/');
-                              const targetUrl = `${SERVER_URL}/${fp.startsWith('/') ? fp.substring(1) : fp}?v=${Date.now()}`;
+                              const targetUrl = buildFileUrl(fp);
                               handleDownload(e, targetUrl, c.fulfilling_document_title);
                             }}
                             className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-semibold transition-colors"
@@ -578,7 +579,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                           <button 
                             onClick={(e) => {
                               const fp = att.file_path.replace(/\\/g, '/');
-                              const targetUrl = `${SERVER_URL}/${fp.startsWith('/') ? fp.substring(1) : fp}?v=${Date.now()}`;
+                              const targetUrl = buildFileUrl(fp);
                               handleDownload(e, targetUrl, att.file_name);
                             }}
                             className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded hover:bg-indigo-200"
@@ -770,7 +771,7 @@ const DocumentDetailsModal = ({ document, onClose }) => {
                 <div className="space-y-3 pl-2 border-l-2 border-amber-200 ml-2">
                   {versions.map((ver, idx) => {
                     const verPath = ver.file_path?.replace(/\\/g, '/');
-                    const verUrl = verPath ? `${SERVER_URL}/${verPath.startsWith('/') ? verPath.substring(1) : verPath}?v=${Date.now()}` : null;
+                    const verUrl = verPath ? buildFileUrl(verPath) : null;
                     return (
                       <div key={ver.id} className="relative pl-6">
                         <span className="absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-white bg-amber-400"></span>

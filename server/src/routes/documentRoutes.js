@@ -41,7 +41,12 @@ const handleMulterError = (err, req, res, next) => {
     next(err);
 };
 
-const extractText = async (filePath, mimetype) => {
+// PostgreSQL text can't hold NUL characters, which some PDFs (and parser errors) contain
+const cleanText = (text) => String(text ?? '').replace(/\u0000/g, '');
+
+const extractText = async (filePath, mimetype) => cleanText(await readText(filePath, mimetype));
+
+const readText = async (filePath, mimetype) => {
     try {
         if (mimetype === 'application/pdf') {
             const dataBuffer = fs.readFileSync(filePath);
@@ -265,7 +270,9 @@ router.get('/', authenticateToken, async (req, res) => {
         } else if (req.user.role_id === 2 || req.user.role_id > 3) {
             query = `
                 SELECT DISTINCT d.*,
-                (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id) as total_prereqs,
+                (SELECT name FROM offices WHERE id = d.current_office_id) AS current_office_name,
+                (SELECT name FROM users WHERE id = d.current_assignee_id) AS current_assignee_name,
+                                (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id) as total_prereqs,
                 (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id AND dp.fulfilled_by_document_id IS NOT NULL) as fulfilled_prereqs
                 FROM documents d 
                 LEFT JOIN approvals a ON a.document_id = d.id AND a.approver_id = $1
@@ -291,6 +298,14 @@ router.get('/', authenticateToken, async (req, res) => {
                                 )
                             )
                         )
+                        OR d.current_office_id IN (SELECT office_id FROM office_members WHERE user_id = $1 UNION SELECT id FROM offices WHERE head_id = $1)
+                        OR (
+                            d.parallel_branch_data IS NOT NULL AND EXISTS (
+                                SELECT 1 FROM jsonb_array_elements(d.parallel_branch_data::jsonb) AS ob
+                                WHERE ob->>'status' = 'Pending'
+                                AND (ob->>'officeId')::int IN (SELECT office_id FROM office_members WHERE user_id = $1 UNION SELECT id FROM offices WHERE head_id = $1)
+                            )
+                        )
                     ))
                    OR a.approver_id = $1
                    OR d.submitter_id = $1
@@ -300,6 +315,8 @@ router.get('/', authenticateToken, async (req, res) => {
         } else {
             query = `
                 SELECT d.*,
+                (SELECT name FROM offices WHERE id = d.current_office_id) AS current_office_name,
+                (SELECT name FROM users WHERE id = d.current_assignee_id) AS current_assignee_name,
                 (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id) as total_prereqs,
                 (SELECT COUNT(*) FROM document_prerequisites dp WHERE dp.parent_document_id = d.id AND dp.fulfilled_by_document_id IS NOT NULL) as fulfilled_prereqs
                 FROM documents d ORDER BY created_at DESC`;

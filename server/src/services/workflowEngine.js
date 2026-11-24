@@ -32,8 +32,39 @@ const resolveDelegate = async (db, userId) => {
     return current;
 };
 
+const officeHead = async (db, officeId) => {
+    if (!officeId) return null;
+    const r = await db.query('SELECT head_id FROM offices WHERE id = $1', [officeId]);
+    return r.rows[0]?.head_id || null;
+};
+
+/** Everyone who works from an office's queue: its officers and its head. */
+const officeStaff = async (db, officeId) => {
+    if (!officeId) return [];
+    const r = await db.query(
+        `SELECT user_id AS id FROM office_members WHERE office_id = $1
+         UNION SELECT head_id FROM offices WHERE id = $1 AND head_id IS NOT NULL`,
+        [officeId]
+    );
+    return r.rows.map((x) => x.id);
+};
+
+/** Offices a user belongs to, and the ones they head. */
+const loadOfficeMembership = async (db, userId) => {
+    const r = await db.query(
+        `SELECT office_id AS id, FALSE AS is_head FROM office_members WHERE user_id = $1
+         UNION ALL SELECT id, TRUE FROM offices WHERE head_id = $1`,
+        [userId]
+    );
+    return {
+        officeIds: [...new Set(r.rows.map((x) => x.id))],
+        headOfOfficeIds: r.rows.filter((x) => x.is_head).map((x) => x.id),
+    };
+};
+
 /**
  * Who should act on a task node:
+ *  - "office": the office head, or the office's shared queue (any officer can claim it).
  *  - "role_based": the active user with that role (and department) who has the fewest pending documents.
  *    If nobody holds the role, the task stays open to the role as a pool.
  *  - otherwise: the specific user configured on the node.
@@ -41,6 +72,15 @@ const resolveDelegate = async (db, userId) => {
  */
 const resolveTaskAssignment = async (db, node, submitterId) => {
     const data = node.data || {};
+    if (data.assignmentStrategy === 'office') {
+        // Office steps: the head personally, or the office's shared queue for any officer to claim
+        const officeId = data.officeId ? parseInt(data.officeId, 10) : null;
+        if (data.officePosition === 'head') {
+            const head = await officeHead(db, officeId);
+            return { assigneeId: await resolveDelegate(db, head), roleId: null, departmentId: null, officeId };
+        }
+        return { assigneeId: null, roleId: null, departmentId: null, officeId };
+    }
     if (data.assignmentStrategy === 'role_based') {
         const roleId = data.roleId ? parseInt(data.roleId, 10) : null;
         let departmentId = null;
@@ -142,6 +182,7 @@ const emptyState = () => ({
     current_assignee_id: null,
     current_role_id: null,
     current_department_id: null,
+    current_office_id: null,
     parallel_branch_data: null,
     resume_at: null,
     delegation_sla_deadline: null,
@@ -156,6 +197,7 @@ const buildBranch = async (db, branchOutcome, parallelNodeId, doc) => {
             assigneeId: a.assigneeId,
             roleId: a.roleId,
             departmentId: a.departmentId,
+            officeId: a.officeId || null,
             status: 'Pending',
             deadline: deadlineFor(branchOutcome.node),
         };
@@ -188,8 +230,10 @@ const applyOutcome = async (db, doc, flow, outcome, ctx = {}) => {
         state.current_assignee_id = a.assigneeId;
         state.current_role_id = a.roleId;
         state.current_department_id = a.departmentId;
+        state.current_office_id = a.officeId || null;
         state.delegation_sla_deadline = deadlineFor(outcome.node);
         if (a.assigneeId) assigned.push(a.assigneeId);
+        else if (a.officeId) assigned.push(...(await officeStaff(db, a.officeId)));
         return { state, assigned, completed: false };
     }
 
@@ -212,7 +256,11 @@ const applyOutcome = async (db, doc, flow, outcome, ctx = {}) => {
 
         state.current_node_id = outcome.node.id;
         state.parallel_branch_data = branches;
-        branches.forEach((b) => { if (b.status === 'Pending' && b.assigneeId) assigned.push(b.assigneeId); });
+        for (const b of branches) {
+            if (b.status !== 'Pending') continue;
+            if (b.assigneeId) assigned.push(b.assigneeId);
+            else if (b.officeId) assigned.push(...(await officeStaff(db, b.officeId)));
+        }
         return { state, assigned, completed: false };
     }
 
@@ -227,7 +275,7 @@ const saveState = async (db, documentId, state) => {
             status = $1, current_node_id = $2, current_assignee_id = $3, current_role_id = $4,
             current_department_id = $5, parallel_branch_data = $6, resume_at = $7,
             delegation_sla_deadline = $8, sla_reminder_sent = FALSE, sla_warning_sent = FALSE,
-            sla_escalated = FALSE, updated_at = CURRENT_TIMESTAMP
+            sla_escalated = FALSE, current_office_id = $10, updated_at = CURRENT_TIMESTAMP
          WHERE id = $9`,
         [
             state.status,
@@ -239,6 +287,7 @@ const saveState = async (db, documentId, state) => {
             state.resume_at,
             state.delegation_sla_deadline,
             documentId,
+            state.current_office_id || null,
         ]
     );
 };
@@ -269,25 +318,39 @@ const startDocument = async (db, doc, flow, ctx = {}) => {
 };
 
 /** Find the parallel branch (index) this user may act on, or -1. Super admins may act on any pending branch. */
-const findBranchForUser = (branches, user) =>
-    branches.findIndex((b) => {
-        if (b.status !== 'Pending') return false;
-        if (user.role_id === 3) return true;
-        if (b.assigneeId) return b.assigneeId === user.id;
-        return b.roleId === user.role_id && (!b.departmentId || b.departmentId === user.department_id);
-    });
+const inOffice = (user, officeId) => Boolean(officeId) && (user.officeIds || []).includes(officeId);
+const headsOffice = (user, officeId) => Boolean(officeId) && (user.headOfOfficeIds || []).includes(officeId);
+
+/**
+ * Whether `user` holds a step described by (assigneeId, roleId, departmentId, officeId).
+ * Office steps: once claimed, the claimer (or the office head); before that, anyone in the office.
+ */
+const holdsStep = (user, { assigneeId, roleId, departmentId, officeId }) => {
+    if (assigneeId) return assigneeId === user.id || headsOffice(user, officeId);
+    if (officeId) return inOffice(user, officeId);
+    return roleId != null && roleId === user.role_id && (!departmentId || departmentId === user.department_id);
+};
+
+const findBranchForUser = (branches, user) => {
+    const pending = (b) => b.status === 'Pending';
+    // Prefer a branch assigned to this user personally, then one they can act on through a role or office
+    let i = branches.findIndex((b) => pending(b) && b.assigneeId === user.id);
+    if (i === -1) i = branches.findIndex((b) => pending(b) && holdsStep(user, b));
+    if (i === -1 && user.role_id === 3) i = branches.findIndex(pending);
+    return i;
+};
 
 /** Whether `user` (with role_id and department_id) may approve or reject the document right now. */
 const canActOn = (doc, user) => {
     if (doc.status !== 'Pending' || doc.resume_at) return false;
     if (user.role_id === 3) return true;
     if (Array.isArray(doc.parallel_branch_data)) return findBranchForUser(doc.parallel_branch_data, user) !== -1;
-    if (doc.current_assignee_id) return doc.current_assignee_id === user.id;
-    return (
-        doc.current_role_id != null &&
-        doc.current_role_id === user.role_id &&
-        (!doc.current_department_id || doc.current_department_id === user.department_id)
-    );
+    return holdsStep(user, {
+        assigneeId: doc.current_assignee_id,
+        roleId: doc.current_role_id,
+        departmentId: doc.current_department_id,
+        officeId: doc.current_office_id,
+    });
 };
 
 /**
@@ -313,10 +376,11 @@ const advanceAfterApproval = async (db, doc, flow, user) => {
             const a = await resolveTaskAssignment(db, next.node, doc.submitter_id);
             branches[idx] = {
                 parallelNodeId: branch.parallelNodeId, nodeId: next.node.id, status: 'Pending',
-                assigneeId: a.assigneeId, roleId: a.roleId, departmentId: a.departmentId,
+                assigneeId: a.assigneeId, roleId: a.roleId, departmentId: a.departmentId, officeId: a.officeId || null,
                 deadline: deadlineFor(next.node), // each step in a branch gets its own deadline
             };
-            if (a.assigneeId) await notifyAssigned(db, doc, [a.assigneeId], 'Parallel review required');
+            const who = a.assigneeId ? [a.assigneeId] : await officeStaff(db, a.officeId);
+            await notifyAssigned(db, doc, who, 'Parallel review required');
         } else {
             branches[idx] = { ...branch, status: 'Approved', joinNodeId: next.kind === 'join' ? next.node.id : branch.joinNodeId || null };
         }
@@ -364,4 +428,7 @@ module.exports = {
     resumeAfterDelay,
     canActOn,
     findBranchForUser,
+    officeHead,
+    officeStaff,
+    loadOfficeMembership,
 };

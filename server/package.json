@@ -8,7 +8,8 @@
     "db:setup": "node db/setup.js",
     "db:reset": "node db/setup.js --reset",
     "test": "node --test --test-concurrency=1 test/*.test.js test/integration/*.test.js",
-    "test:unit": "node --test test/*.test.js"
+    "test:unit": "node --test test/*.test.js",
+    "worker": "node src/worker.js"
   },
   "keywords": [],
   "author": "Maraki Teferi",
@@ -20,6 +21,7 @@
     "csv-parser": "^3.2.1",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^7.5.1",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.0",
     "node-cron": "^4.2.1",
