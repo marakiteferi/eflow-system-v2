@@ -210,6 +210,18 @@ const loadDocumentForUpdate = async (db, documentId) => {
     return r.rows[0] || null;
 };
 
+// Workflow designers can switch off "approve" or "reject" for a step
+const actionAllowed = async (db, doc, actor, action) => {
+    if (!doc.workflow_id) return true;
+    const nodeId = Array.isArray(doc.parallel_branch_data)
+        ? doc.parallel_branch_data[engine.findBranchForUser(doc.parallel_branch_data, actor)]?.nodeId
+        : doc.current_node_id;
+    const wf = await db.query('SELECT flow_structure FROM workflows WHERE id = $1', [doc.workflow_id]);
+    const node = parseFlow(wf.rows[0]?.flow_structure).nodes.find((n) => n.id === nodeId);
+    const allowed = node?.data?.allowedActions;
+    return !Array.isArray(allowed) || allowed.includes(action);
+};
+
 // POST: Approve the current step and route the document onward
 router.post('/approve', authenticateToken, async (req, res) => {
     const { documentId, otp, comments, signatureDrawing } = req.body;
@@ -247,6 +259,11 @@ router.post('/approve', authenticateToken, async (req, res) => {
                 ? `This document is already ${doc.status.toLowerCase()}.`
                 : 'You are not authorized to approve this document at this stage.';
             return res.status(403).json({ message: reason });
+        }
+
+        if (!(await actionAllowed(client, doc, actor, 'approve'))) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ message: 'Approving is not allowed at this step.' });
         }
 
         const openPrereqs = await client.query(
@@ -343,6 +360,11 @@ router.post('/reject', authenticateToken, async (req, res) => {
         if (!engine.canActOn(doc, actor)) {
             await client.query('ROLLBACK');
             return res.status(403).json({ message: 'You are not authorized to reject this document at this stage.' });
+        }
+
+        if (!(await actionAllowed(client, doc, actor, 'reject'))) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ message: 'Rejecting is not allowed at this step.' });
         }
 
         const nodeId = Array.isArray(doc.parallel_branch_data)

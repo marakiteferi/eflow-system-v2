@@ -293,6 +293,7 @@ router.get('/', authenticateToken, async (req, res) => {
                         )
                     ))
                    OR a.approver_id = $1
+                   OR d.submitter_id = $1
                 ORDER BY d.created_at DESC
             `;
             values = [req.user.id, req.user.role_id, req.user.department_id];

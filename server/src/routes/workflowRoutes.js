@@ -82,6 +82,28 @@ router.put('/:id', authenticateToken, requireWorkflowManager, async (req, res) =
     try {
         client = await pool.connect();
         await client.query('BEGIN');
+
+        // Documents already in progress must still be able to find the step they're waiting at
+        const newFlow = parseFlow(flow_structure);
+        const nodeIds = new Set(newFlow.nodes.map((n) => n.id));
+        const inFlight = await client.query(
+            "SELECT id, title, current_node_id, parallel_branch_data FROM documents WHERE workflow_id = $1 AND status = 'Pending'",
+            [workflowId]
+        );
+        const stranded = inFlight.rows.filter((d) => {
+            const waitingAt = Array.isArray(d.parallel_branch_data)
+                ? d.parallel_branch_data.filter((b) => b.status === 'Pending').map((b) => b.nodeId)
+                : [d.current_node_id];
+            return waitingAt.some((id) => id && !nodeIds.has(id));
+        });
+        if (stranded.length > 0) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                message: `Cannot save: ${stranded.length} document(s) in progress are waiting at a step you removed. Restore the step, or wait until they move on.`,
+                problems: stranded.map((d) => `"${d.title}" is waiting at a removed step.`),
+            });
+        }
+
         await client.query('UPDATE workflows SET name = $1, flow_structure = $2 WHERE id = $3', [name, flow_structure, workflowId]);
         await client.query("INSERT INTO audit_logs (user_id, action) VALUES ($1, $2)", [req.user.id, `Updated workflow: '${name}'`]);
         await client.query('COMMIT');

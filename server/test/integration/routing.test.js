@@ -274,6 +274,24 @@ test('workflow routing', { skip, concurrency: false }, async (t) => {
         assert.match(String(submitDraft), /not published/);
     });
 
+    await t.test('editing a workflow cannot remove a step that documents are waiting at', async () => {
+        const wf = await h.createWorkflow(admin.token, 'Editable', [h.task('a', S1), h.task('b', S2)], [h.edge('a', 'b')]);
+        await h.submit(student.token, wf.id);
+        const withoutA = { nodes: [h.task('b', S2)], edges: [], metadata: { isPublished: true } };
+        const r = await h.api('PUT', `/workflows/${wf.id}`, { token: admin.token, body: { name: 'Editable', flow_structure: withoutA } });
+        assert.equal(r.status, 409);
+        const renamed = { nodes: [h.task('a', S1, { label: 'Renamed' }), h.task('b', S2)], edges: [h.edge('a', 'b')], metadata: { isPublished: true } };
+        const ok = await h.api('PUT', `/workflows/${wf.id}`, { token: admin.token, body: { name: 'Editable', flow_structure: renamed } });
+        assert.equal(ok.status, 200, 'other edits are still allowed');
+    });
+
+    await t.test('a step can switch off rejecting', async () => {
+        const wf = await h.createWorkflow(admin.token, 'Approve only', [h.task('a', S1, { allowedActions: ['approve'] })], []);
+        const doc = await h.submit(student.token, wf.id);
+        assert.equal((await h.reject(staff.token, doc.id)).status, 403);
+        assert.equal((await h.approve(staff.token, doc.id)).status, 200);
+    });
+
     await t.test('services restricted to some roles reject other roles', async () => {
         const wf = await h.createWorkflow(admin.token, 'Staff only', [h.task('a', A)], [], { allowedSubmitters: [2] });
         const r = await h.submit(student.token, wf.id).catch((e) => e);
