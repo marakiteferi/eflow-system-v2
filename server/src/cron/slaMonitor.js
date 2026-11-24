@@ -75,10 +75,7 @@ const resumeDelayedDocuments = async () => {
  */
 const slaActionFor = (slot, node, now = Date.now()) => {
     if (!slot.deadline || slot.escalated) return null;
-    if (isBreached(slot.deadline, now)) {
-        const target = node?.data?.escalationUserId ? parseInt(node.data.escalationUserId, 10) : null;
-        return { kind: 'escalate', target: target || null };
-    }
+    if (isBreached(slot.deadline, now)) return { kind: 'escalate' };
     const warningHours = Math.abs(parseFloat(node?.data?.warningHours)) || null;
     const reminderHours = Math.abs(parseFloat(node?.data?.reminderHours)) || null;
     if (warningHours && !slot.warningSent && isWithinHours(slot.deadline, warningHours, now)) return { kind: 'warning' };
@@ -86,10 +83,33 @@ const slaActionFor = (slot, node, now = Date.now()) => {
     return null;
 };
 
+/**
+ * Who a late step goes to: the target set on the step if there is one, otherwise the head
+ * of the office the step belongs to (or of the reviewer's office). Nobody if the head is
+ * the one who is late.
+ */
+const escalationTarget = async (db, node, slot) => {
+    if (node?.data?.escalationUserId) return parseInt(node.data.escalationUserId, 10);
+    let officeId = slot.officeId || (node?.data?.assignmentStrategy === 'office' ? parseInt(node.data.officeId, 10) : null);
+    if (!officeId && slot.assigneeId) {
+        const r = await db.query(
+            `SELECT o.id FROM office_members m JOIN offices o ON o.id = m.office_id
+             WHERE m.user_id = $1 AND o.head_id IS NOT NULL AND o.head_id <> $1 ORDER BY o.id LIMIT 1`,
+            [slot.assigneeId]
+        );
+        officeId = r.rows[0]?.id || null;
+    }
+    const head = await engine.resolveDelegate(db, await engine.officeHead(db, officeId));
+    return head && head !== slot.assigneeId ? head : null;
+};
+
+/** The people to remind: the reviewer, or everyone in the office while nobody has claimed it. */
+const recipients = async (db, slot) => (slot.assigneeId ? [slot.assigneeId] : engine.officeStaff(db, slot.officeId));
+
 /** Send the alert or perform the escalation for one slot. Returns the slot's new fields. */
 const applySlaAction = async (db, doc, slot, action) => {
     if (action.kind === 'warning') {
-        await notifyUser(db, slot.assigneeId, {
+        for (const userId of await recipients(db, slot)) await notifyUser(db, userId, {
             title: `⚠️ SLA warning: "${doc.title}"`,
             body: `"${doc.title}" is about to miss its review deadline. Immediate action is required.`,
             type: 'danger',
@@ -98,7 +118,7 @@ const applySlaAction = async (db, doc, slot, action) => {
         return { warningSent: true, reminderSent: true };
     }
     if (action.kind === 'reminder') {
-        await notifyUser(db, slot.assigneeId, {
+        for (const userId of await recipients(db, slot)) await notifyUser(db, userId, {
             title: `⏰ Reminder: "${doc.title}"`,
             body: `"${doc.title}" is approaching its review deadline.`,
             type: 'warning',
@@ -108,10 +128,11 @@ const applySlaAction = async (db, doc, slot, action) => {
     }
 
     // Escalation happens once per step; the flag resets when the step changes
+    action.target = await escalationTarget(db, action.node, slot);
     const missed = new Date(slot.deadline).toISOString();
     if (!action.target) {
         await db.query('INSERT INTO audit_logs (document_id, user_id, action) VALUES ($1, $2, $3)',
-            [doc.id, slot.assigneeId, 'SLA Breached — no escalation target configured for this step']);
+            [doc.id, slot.assigneeId, 'SLA Breached — no escalation target or office head for this step']);
         console.warn(`⚠️ SLA breach: document ${doc.id} has no escalation target`);
         return { escalated: true };
     }
@@ -137,7 +158,9 @@ const checkDocumentSla = async (db, doc, flow) => {
         let changed = false;
         const branches = [];
         for (const b of doc.parallel_branch_data) {
-            const action = b.status === 'Pending' ? slaActionFor(b, getNode(flow, b.nodeId)) : null;
+            const node = getNode(flow, b.nodeId);
+            const action = b.status === 'Pending' ? slaActionFor(b, node) : null;
+            if (action) action.node = node;
             if (!action) { branches.push(b); continue; }
             branches.push({ ...b, ...(await applySlaAction(db, doc, b, action)) });
             changed = true;
@@ -157,9 +180,12 @@ const checkDocumentSla = async (db, doc, flow) => {
         reminderSent: doc.sla_reminder_sent,
         warningSent: doc.sla_warning_sent,
         escalated: doc.sla_escalated,
+        officeId: doc.current_office_id,
     };
-    const action = slaActionFor(slot, getNode(flow, doc.current_node_id));
+    const node = getNode(flow, doc.current_node_id);
+    const action = slaActionFor(slot, node);
     if (!action) return;
+    action.node = node;
     const r = await applySlaAction(db, doc, slot, action);
     if (r.assigneeId) {
         await db.query(
@@ -194,9 +220,27 @@ const checkSlas = async () => {
     }
 };
 
+// Any number to identify this job's lock; all servers must use the same one
+const JOB_LOCK_ID = 724001;
+
+/**
+ * Run the jobs if no other server is running them right now. A PostgreSQL advisory lock
+ * makes this safe with several API servers: only one of them does the work each minute,
+ * so nobody gets the same reminder twice.
+ */
 const runBackgroundJobs = async () => {
-    await resumeDelayedDocuments();
-    await checkSlas();
+    const client = await pool.connect();
+    let locked = false;
+    try {
+        locked = (await client.query('SELECT pg_try_advisory_lock($1) AS ok', [JOB_LOCK_ID])).rows[0].ok;
+        if (!locked) return false;
+        await resumeDelayedDocuments();
+        await checkSlas();
+        return true;
+    } finally {
+        if (locked) await client.query('SELECT pg_advisory_unlock($1)', [JOB_LOCK_ID]).catch(() => {});
+        client.release();
+    }
 };
 
 const startSlaMonitor = () => {

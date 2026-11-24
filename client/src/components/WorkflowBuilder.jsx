@@ -34,7 +34,10 @@ const BaseNode = ({ id, typeName, icon, bgColor, borderColor, textColor, title, 
 const TaskNode = ({ id, data, selected }) => {
   let badgeText = '⚠️ Unassigned';
 
-  if (data.assignmentStrategy === 'role_based') {
+  if (data.assignmentStrategy === 'office') {
+    const officeName = data.officesList?.find(o => o.id === parseInt(data.officeId))?.name;
+    badgeText = officeName ? `🏛️ ${officeName} · ${data.officePosition === 'head' ? 'Head' : 'Any officer'}` : '⚠️ Pick an office';
+  } else if (data.assignmentStrategy === 'role_based') {
     const roleName = data.rolesList?.find(r => r.id === parseInt(data.roleId))?.name || 'Role';
     if (data.routingType === 'ANY') badgeText = `👥 Any ${roleName}`;
     else if (data.routingType === 'INITIATOR_DEPT') badgeText = `🏢 Dept ${roleName}`;
@@ -205,13 +208,20 @@ const EmailProperties = ({ data, onChange }) => {
 // ==========================================
 // 2. RIGHT INSPECTOR PANEL
 // ==========================================
-const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [], rolesList = [], departments = [], savedWorkflows = [], selectedWorkflowId = '' }) => {
+const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList = [], rolesList = [], departments = [], officesList = [], savedWorkflows = [], selectedWorkflowId = '' }) => {
   // Hooks MUST be called before any early returns (React rules of hooks)
   const [newCheckItem, setNewCheckItem] = useState('');
   const [rolePreviewUsers, setRolePreviewUsers] = useState([]);
   const [rolePreviewLoading, setRolePreviewLoading] = useState(false);
 
   const data = selectedNode?.data || {};
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  // Open the advanced (person / role) options when the step already uses them
+  useEffect(() => {
+    setShowAdvanced(['specific_user', 'role_based'].includes(selectedNode?.data?.assignmentStrategy) || Boolean(selectedNode?.data?.assignee && !selectedNode?.data?.assignmentStrategy));
+    // Only when another step is selected
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNode?.id]);
 
   // Live preview: fetch matching users whenever role + department filter changes
   useEffect(() => {
@@ -269,6 +279,8 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
       return;
     }
     const parts = val.split(':');
+    onChange('officeId', null);
+    onChange('officePosition', null);
     if (parts[0] === 'USER') {
       onChange('assignmentStrategy', 'specific_user');
       onChange('assignee', parts[1]);
@@ -307,6 +319,42 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
           <>
             <div>
               <label className="block text-xs font-bold text-gray-700 mb-1">Who Should Complete This Step?</label>
+              {!showAdvanced ? (
+                <div className="bg-indigo-50/60 border border-indigo-100 rounded p-2.5 space-y-2">
+                  <select
+                    value={data.assignmentStrategy === 'office' ? (data.officeId || '') : ''}
+                    onChange={(e) => {
+                      onChange('assignmentStrategy', 'office');
+                      onChange('officeId', e.target.value || null);
+                      if (!data.officePosition) onChange('officePosition', 'officer');
+                      onChange('assignee', null); onChange('roleId', null); onChange('routingType', null); onChange('targetDepartmentId', null);
+                    }}
+                    className="w-full text-sm border-gray-300 rounded p-2 border bg-white shadow-sm"
+                  >
+                    <option value="">-- Select office --</option>
+                    {officesList.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                  {data.assignmentStrategy === 'office' && data.officeId && (
+                    <div className="flex gap-1.5">
+                      {[['officer', 'Any officer'], ['head', 'Head of office']].map(([value, text]) => (
+                        <button key={value} type="button" onClick={() => onChange('officePosition', value)}
+                          className={`flex-1 text-xs py-1.5 rounded border font-semibold ${ (data.officePosition || 'officer') === value ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-300'}`}>
+                          {text}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[10px] text-indigo-700">
+                    {officesList.length === 0
+                      ? 'No offices yet. Create them in Admin Setup → Offices.'
+                      : (data.officePosition || 'officer') === 'head'
+                        ? 'Goes to the head of the office, or to whoever covers for them.'
+                        : 'Goes to the office queue; any officer can claim it. Late steps escalate to the head.'}
+                  </p>
+                  <button type="button" onClick={() => setShowAdvanced(true)} className="text-[10px] text-gray-500 underline">Advanced: a specific person or role</button>
+                </div>
+              ) : (
+              <>
               <select
                 value={getSmartDropdownValue()}
                 onChange={(e) => handleSmartDropdownChange(e.target.value)}
@@ -350,6 +398,9 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                   ))}
                 </optgroup>
               </select>
+              <button type="button" onClick={() => setShowAdvanced(false)} className="text-[10px] text-indigo-600 underline">Use an office instead</button>
+              </>
+              )}
             </div>
 
                   {/* ── Live matching users preview ───────────────────────────── */}
@@ -423,12 +474,12 @@ const PropertyInspector = ({ selectedNode, updateNodeData, closePanel, staffList
                 ))}
                 {parseFloat(data.escalationHours) > 0 && (
                   <div className="pt-2 mt-1 border-t border-red-100">
-                    <label className="block text-[10px] font-bold text-red-700 uppercase tracking-wider mb-1">Escalate To (Required)</label>
+                    <label className="block text-[10px] font-bold text-red-700 uppercase tracking-wider mb-1">Escalate To</label>
                     <select
                       value={data.escalationUserId || ''} onChange={(e) => onChange('escalationUserId', e.target.value)}
                       className="w-full text-xs border border-red-300 rounded p-1.5 bg-red-50"
                     >
-                      <option value="">-- Select Escalation Target --</option>
+                      <option value="">Head of the office (automatic)</option>
                       {staffList.filter(s => s.role_id !== 1).map(s => (
                         <option key={s.id} value={s.id}>
                           {s.name}{s.department_name ? ` (${s.department_name})` : ''}
@@ -693,6 +744,7 @@ const WorkflowBuilderInner = () => {
   const [savedWorkflows, setSavedWorkflows] = useState([]);
   const [staffList, setStaffList] = useState([]);
   const [rolesList, setRolesList] = useState([]);
+  const [officesList, setOfficesList] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [allowedSubmitters, setAllowedSubmitters] = useState([]);
   const [prerequisiteWorkflowIds, setPrerequisiteWorkflowIds] = useState('');
@@ -731,12 +783,14 @@ const WorkflowBuilderInner = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [wfRes, staffRes, rolesRes, deptRes] = await Promise.all([
+        const [wfRes, staffRes, rolesRes, deptRes, officeRes] = await Promise.all([
           api.get('/workflows'),
           api.get('/admin/users'),
           api.get('/admin/roles'),
-          api.get('/admin/departments')
+          api.get('/admin/departments'),
+          api.get('/offices').catch(() => ({ data: [] })),
         ]);
+        setOfficesList(officeRes.data || []);
         setSavedWorkflows(wfRes.data);
         setStaffList(staffRes.data); // All system users can be manually assigned as approvers
         setRolesList(rolesRes.data);
@@ -791,8 +845,8 @@ const WorkflowBuilderInner = () => {
   // Ensure staffList is available in node data (for the badges in TaskNode)
   // Ensure context lists are available in node data (for the badges in TaskNode)
   useEffect(() => {
-    setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, staffList, rolesList, departments } })));
-  }, [staffList, rolesList, departments]);
+    setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, staffList, rolesList, departments, officesList } })));
+  }, [staffList, rolesList, departments, officesList]);
 
   // Drag and Drop Handlers
   const onDragOver = useCallback((event) => {
@@ -817,13 +871,14 @@ const WorkflowBuilderInner = () => {
       type,
       position,
       selected: true,
-      data: { label, staffList, rolesList, departments },
+      // New approval steps go to an office by default; a named person is the advanced option
+      data: { label, staffList, rolesList, departments, officesList, ...(type === 'task' ? { assignmentStrategy: 'office', officePosition: 'officer' } : {}) },
     };
 
     // Select the new node (and only it) so its settings panel opens straight away
     setNodes((nds) => nds.map(n => ({ ...n, selected: false })).concat(newNode));
     setSelectedNodeId(newNode.id);
-  }, [screenToFlowPosition, staffList, rolesList, departments]);
+  }, [screenToFlowPosition, staffList, rolesList, departments, officesList]);
 
 
   // Load/Save
@@ -840,7 +895,7 @@ const WorkflowBuilderInner = () => {
 
       const loadedNodes = (flowData.nodes || []).map(node => ({
         ...node,
-        data: { ...node.data, staffList, rolesList, departments }
+        data: { ...node.data, staffList, rolesList, departments, officesList }
       }));
       setNodes(loadedNodes); setEdges(flowData.edges || []);
       // Frame the loaded workflow once React Flow has measured the nodes
@@ -864,10 +919,11 @@ const WorkflowBuilderInner = () => {
       if (n.type === 'task') {
         const hasAssignee = !!n.data.assignee;
         const hasRole = n.data.assignmentStrategy === 'role_based' && !!n.data.roleId;
-        if (!hasAssignee && !hasRole) errors.push(`Approval node "${n.data.label}" has no assignee or role set.`);
-        
-        if (parseFloat(n.data.escalationHours) > 0 && !n.data.escalationUserId) {
-          errors.push(`Approval node "${n.data.label}" has an SLA breach timer but no Escalation Target selected.`);
+        const hasOffice = n.data.assignmentStrategy === 'office' && !!n.data.officeId;
+        if (!hasAssignee && !hasRole && !hasOffice) {
+          errors.push(n.data.assignmentStrategy === 'office'
+            ? `Approval node "${n.data.label}" has no office selected.`
+            : `Approval node "${n.data.label}" has no assignee or role set.`);
         }
       }
       if (n.type === 'email' && !n.data.recipient) errors.push(`Email node "${n.data.label}" has no recipient.`);
@@ -961,6 +1017,7 @@ const WorkflowBuilderInner = () => {
         delete cleanData.staffList; // strip large redundant arrays before saving
         delete cleanData.rolesList;
         delete cleanData.departments;
+        delete cleanData.officesList;
         return { ...n, data: cleanData };
       });
       const metadataObj = { allowedSubmitters, prerequisiteWorkflowIds: prerequisiteWorkflowIds ? prerequisiteWorkflowIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)) : null, isPublished };
@@ -1356,6 +1413,7 @@ const WorkflowBuilderInner = () => {
             staffList={staffList}
             rolesList={rolesList}
             departments={departments}
+            officesList={officesList}
             savedWorkflows={savedWorkflows}
             selectedWorkflowId={selectedWorkflowId}
           />

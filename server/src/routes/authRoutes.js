@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { registerUser, loginUser } = require('../controllers/authController');
 const authenticateToken = require('../middleware/authMiddleware');
+const { signFileToken } = require('../middleware/fileAccess');
+const { loginLimiter, passwordResetLimiter } = require('../middleware/rateLimits');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
@@ -21,10 +23,15 @@ const transporter = nodemailer.createTransport({
 router.post('/register', registerUser);
 
 // POST /api/auth/login
-router.post('/login', loginUser);
+router.post('/login', loginLimiter, loginUser);
+
+// GET /api/auth/file-token: a fresh token for opening uploaded files
+router.get('/file-token', authenticateToken, (req, res) => {
+    res.json({ fileToken: signFileToken(req.user) });
+});
 
 // POST /api/auth/forgot-password
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', passwordResetLimiter, async (req, res) => {
     const { email } = req.body;
     // Always respond identically to prevent email enumeration
     const successMsg = 'If an account with that email exists, a password reset link has been sent.';

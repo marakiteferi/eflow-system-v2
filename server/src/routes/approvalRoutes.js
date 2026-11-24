@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+const codes = require('../services/oneTimeCodes');
+const { codeRequestLimiter } = require('../middleware/rateLimits');
 const crypto = require('crypto');
 const authenticateToken = require('../middleware/authMiddleware');
 const engine = require('../services/workflowEngine');
@@ -15,7 +17,6 @@ const fs = require('fs');
 
 
 
-const otpStore = new Map();
 
 // ── Helper: Append Signature Certificate page to approved PDFs ──────────────
 // PDF-only since all uploads are now PDF.
@@ -161,19 +162,17 @@ const appendSignatureCertificate = async (filePath, documentId, documentTitle, p
 };
 
 // POST: Request OTP
-router.post('/request-otp', authenticateToken, async (req, res) => {
+router.post('/request-otp', authenticateToken, codeRequestLimiter, async (req, res) => {
     try {
         const { documentId } = req.body;
         
-        // Re-use a still-valid code for the same document, so a failed approval attempt
-        // (for example a missing clearance) doesn't lock the approver out.
-        const existing = otpStore.get(req.user.id);
-        const reuse = existing && String(existing.documentId) === String(documentId) && Date.now() < existing.expires;
-        if (reuse && Date.now() - existing.generatedAt < 30 * 1000) {
-            return res.status(429).json({ message: 'A code was just sent. Please wait 30 seconds before requesting another.' });
+        if (!documentId) return res.status(400).json({ message: 'documentId is required.' });
+        // A code requested again within 30 seconds is refused; the earlier code still works
+        const issued = await codes.issueCode(req.user.id, 'approval', { documentId });
+        if (issued.tooSoon) {
+            return res.status(429).json({ message: `A code was just sent. Please wait ${issued.tooSoon} seconds before requesting another.` });
         }
-        const otp = reuse ? existing.otp : crypto.randomInt(100000, 1000000).toString();
-        otpStore.set(req.user.id, { otp, documentId, expires: reuse ? existing.expires : Date.now() + 5 * 60000, generatedAt: Date.now() });
+        const otp = issued.code;
 
         const userQuery = await pool.query('SELECT email, name FROM users WHERE id = $1', [req.user.id]);
         const { email, name } = userQuery.rows[0];
@@ -202,7 +201,8 @@ router.post('/request-otp', authenticateToken, async (req, res) => {
 // (the JWT can be hours old, and older tokens don't carry the department).
 const loadActor = async (db, userId) => {
     const r = await db.query('SELECT id, role_id, department_id FROM users WHERE id = $1', [userId]);
-    return r.rows[0] || null;
+    if (!r.rows[0]) return null;
+    return { ...r.rows[0], ...(await engine.loadOfficeMembership(db, userId)) };
 };
 
 const loadDocumentForUpdate = async (db, documentId) => {
@@ -225,21 +225,9 @@ const actionAllowed = async (db, doc, actor, action) => {
 // POST: Approve the current step and route the document onward
 router.post('/approve', authenticateToken, async (req, res) => {
     const { documentId, otp, comments, signatureDrawing } = req.body;
-    const storedData = otpStore.get(req.user.id);
-
-    if (!storedData || String(storedData.documentId) !== String(documentId)) {
-        return res.status(400).json({ message: 'Invalid or incorrect OTP' });
-    }
-    if (storedData.otp !== String(otp)) {
-        // Limit guesses: after 5 wrong codes the user must request a new one
-        storedData.attempts = (storedData.attempts || 0) + 1;
-        if (storedData.attempts >= 5) otpStore.delete(req.user.id);
-        return res.status(400).json({ message: 'Invalid or incorrect OTP' });
-    }
-    if (Date.now() > storedData.expires) {
-        otpStore.delete(req.user.id);
-        return res.status(400).json({ message: 'OTP has expired' });
-    }
+    const codeStatus = await codes.checkCode(req.user.id, 'approval', otp, { documentId });
+    if (codeStatus === 'expired') return res.status(400).json({ message: 'OTP has expired' });
+    if (codeStatus !== 'ok') return res.status(400).json({ message: 'Invalid or incorrect OTP' });
 
     let client;
     try {
@@ -319,7 +307,7 @@ router.post('/approve', authenticateToken, async (req, res) => {
         }
 
         await client.query('COMMIT');
-        otpStore.delete(req.user.id);
+        await codes.consumeCode(req.user.id, 'approval');
 
         if (result.completed) {
             const stamped = await appendSignatureCertificate(doc.file_path, doc.id, doc.title, pool);
@@ -373,7 +361,7 @@ router.post('/reject', authenticateToken, async (req, res) => {
 
         await client.query(
             `UPDATE documents SET status = 'Rejected', current_assignee_id = NULL, current_role_id = NULL,
-             current_department_id = NULL, parallel_branch_data = NULL, resume_at = NULL, updated_at = CURRENT_TIMESTAMP
+             current_department_id = NULL, current_office_id = NULL, parallel_branch_data = NULL, resume_at = NULL, updated_at = CURRENT_TIMESTAMP
              WHERE id = $1`,
             [documentId]
         );

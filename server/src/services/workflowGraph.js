@@ -161,9 +161,12 @@ const validateFlow = (flow) => {
         const label = n.data?.label || n.type;
         const out = outgoingEdges(flow, n.id);
         if (n.type === 'task') {
-            const roleBased = n.data?.assignmentStrategy === 'role_based';
-            if (roleBased ? !n.data?.roleId : !n.data?.assignee) {
-                problems.push(`"${label}" has no approver assigned.`);
+            const strategy = n.data?.assignmentStrategy;
+            const missing = strategy === 'office' ? !n.data?.officeId
+                : strategy === 'role_based' ? !n.data?.roleId
+                : !n.data?.assignee;
+            if (missing) {
+                problems.push(strategy === 'office' ? `"${label}" has no office selected.` : `"${label}" has no approver assigned.`);
             }
         }
         if (n.type === 'condition' && !String(n.data?.conditionValue || '').trim()) {

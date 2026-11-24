@@ -5,6 +5,7 @@ import WorkflowBuilder from '../components/WorkflowBuilder';
 import DocumentUpload from '../components/DocumentUpload';
 import DocumentDetailsModal from '../components/DocumentDetailsModal';
 import RoleManager from '../components/RoleManager';
+import OfficeManager from '../components/OfficeManager';
 import StudentPortal from './StudentPortal';
 import api from '../api';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
@@ -29,6 +30,7 @@ const Dashboard = () => {
   const [auditLogs, setAuditLogs] = useState([]);
   const [usersList, setUsersList] = useState([]);
   const [adminView, setAdminView] = useState('overview');
+  const [myOffices, setMyOffices] = useState([]); // offices I work in (as head or officer)
   const [adminStats, setAdminStats] = useState(null);
   const [dynamicRoles, setDynamicRoles] = useState([]);
 
@@ -108,6 +110,8 @@ const Dashboard = () => {
         // Anyone who can be assigned a step needs the checklists and their signature
         const wfResponse = await api.get('/workflows');
         setWorkflows(wfResponse.data);
+        const officesRes = await api.get('/offices/mine').catch(() => ({ data: [] }));
+        setMyOffices(officesRes.data);
         const profileRes = await api.get('/auth/profile');
         if (profileRes.data?.signature_data) {
           setSavedSignature(profileRes.data.signature_data);
@@ -546,16 +550,29 @@ const Dashboard = () => {
                 ) : (
                   filteredDocs.filter(isMyPendingTask).map((doc) => {
                     const allowedTags = getNodeAllowedTags(doc);
-                    const allowedActions = getNodeAllowedActions(doc);
+                    const officeStep = officeStepFor(doc);
+                    // Someone else in the office has claimed it: show it, but leave the actions to them
+                    const allowedActions = officeStep && !officeStep.canAct ? [] : getNodeAllowedActions(doc);
                     const currentTag = localTags[doc.id] ?? (doc.metadata_tag || '');
                     return (
                       <tr key={doc.id} className="hover:bg-gray-50 transition-colors group">
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-medium">#TSK-{doc.id.toString().substring(0, 4)}</td>
                         <td className="px-6 py-4">
                           <p className="font-bold text-gray-900 cursor-pointer group-hover:text-blue-600" onClick={() => setViewingDocument(doc)}>{doc.title}</p>
-                          <p className="text-xs text-gray-500 mt-0.5">
-                            {Array.isArray(doc.parallel_branch_data) ? 'Parallel review: your branch' : doc.current_assignee_id === user?.id ? 'Assigned to you' : 'Assigned to your role'}
-                          </p>
+                          {officeStep ? (
+                            <p className="text-xs mt-0.5 flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold">{officeStep.headStep ? officeStep.office.name : `${officeStep.office.name} queue`}</span>
+                              <span className={officeStep.unclaimed ? 'text-amber-700 font-semibold' : 'text-gray-500'}>
+                                {officeStep.headStep
+                                  ? (officeStep.mine ? 'Head of office sign-off: assigned to you' : `Head of office sign-off: ${doc.current_assignee_name || 'the head'}`)
+                                  : officeStep.unclaimed ? 'Unclaimed' : officeStep.mine ? 'Claimed by you' : `Claimed by ${doc.current_assignee_name || 'a colleague'}`}
+                              </span>
+                            </p>
+                          ) : (
+                            <p className="text-xs text-gray-500 mt-0.5">
+                              {Array.isArray(doc.parallel_branch_data) ? 'Parallel review: your branch' : doc.current_assignee_id === user?.id ? 'Assigned to you' : 'Assigned to your role'}
+                            </p>
+                          )}
 
                           {/* Tag Dropdown implementation embedded in flow */}
                           <div className="mt-2 flex items-center gap-2">
@@ -581,6 +598,12 @@ const Dashboard = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-center space-x-2">
                           {/* Quick Action Buttons */}
                           <button onClick={() => setViewingDocument(doc)} className="text-gray-400 hover:text-blue-600 px-2 py-1 rounded text-xs font-bold border border-transparent hover:border-blue-200 hover:bg-blue-50 transition-colors">View</button>
+                          {officeStep?.unclaimed && (
+                            <button onClick={() => handleClaim(doc.id)} className="text-indigo-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-indigo-200 hover:bg-indigo-600 transition-colors">Claim</button>
+                          )}
+                          {officeStep && !officeStep.unclaimed && !officeStep.headStep && (officeStep.mine || officeStep.office.i_am_head) && (
+                            <button onClick={() => handleClaim(doc.id, true)} className="text-gray-500 hover:text-gray-800 px-2 py-1 rounded text-xs font-bold border border-gray-200 hover:bg-gray-100 transition-colors" title="Put it back in the office queue">Release</button>
+                          )}
                           {allowedActions.includes('approve') && (
                             <button onClick={() => handleRequestApproval(doc.id)} className="text-green-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-green-200 hover:bg-green-600 transition-colors">Approve</button>
                           )}
@@ -607,6 +630,8 @@ const Dashboard = () => {
   // or as one of the open branches of a parallel step.
   const isMyPendingTask = (d) => {
     if (d.status !== 'Pending' || d.resume_at) return false;
+    const step = officeStepFor(d);
+    if (step) return true; // in one of my offices' queues (claimed or not)
     const matches = (assigneeId, roleId, departmentId) => {
       if (assigneeId) return assigneeId === user?.id;
       return roleId != null && roleId === user?.role_id && (!departmentId || departmentId === user?.department_id);
@@ -615,6 +640,49 @@ const Dashboard = () => {
       return d.parallel_branch_data.some(b => b.status === 'Pending' && matches(b.assigneeId, b.roleId, b.departmentId));
     }
     return matches(d.current_assignee_id, d.current_role_id, d.current_department_id);
+  };
+
+  // If the document is waiting in one of my offices, describe that step:
+  // { office, assigneeId, mine (claimed by me), unclaimed, canAct }
+  const officeStepFor = (d) => {
+    if (d.status !== 'Pending' || d.resume_at) return null;
+    const flowNodes = (() => {
+      const wf = workflows.find(w => w.id === d.workflow_id);
+      const flow = wf ? (typeof wf.flow_structure === 'string' ? JSON.parse(wf.flow_structure) : wf.flow_structure) : null;
+      return flow?.nodes || [];
+    })();
+    const describe = (officeId, assigneeId, nodeId) => {
+      const office = myOffices.find(o => o.id === officeId);
+      if (!office) return null;
+      const mine = assigneeId === user?.id;
+      // Steps for the office head don't go through the shared queue
+      const headStep = flowNodes.find(n => n.id === nodeId)?.data?.officePosition === 'head';
+      return { office, assigneeId, mine, headStep, unclaimed: !assigneeId && !headStep, canAct: !assigneeId || mine || office.i_am_head };
+    };
+    if (Array.isArray(d.parallel_branch_data)) {
+      for (const b of d.parallel_branch_data) {
+        if (b.status === 'Pending' && b.officeId) {
+          const step = describe(b.officeId, b.assigneeId, b.nodeId);
+          if (step && (step.mine || step.unclaimed)) return step;
+        }
+      }
+      for (const b of d.parallel_branch_data) {
+        if (b.status === 'Pending' && b.officeId) { const step = describe(b.officeId, b.assigneeId, b.nodeId); if (step) return step; }
+      }
+      return null;
+    }
+    return d.current_office_id ? describe(d.current_office_id, d.current_assignee_id, d.current_node_id) : null;
+  };
+
+  const handleClaim = async (docId, release = false) => {
+    try {
+      const res = await api.post(`/offices/queue/${docId}/${release ? 'release' : 'claim'}`);
+      showToast('success', res.data.message);
+      fetchData();
+    } catch (err) {
+      showToast('error', err.response?.data?.message || 'Could not update the claim.');
+      fetchData();
+    }
   };
 
   const renderServicesView = () => {
@@ -791,6 +859,7 @@ const Dashboard = () => {
               {canCreateWorkflows && <button onClick={() => setAdminView('workflows')} className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${adminView === 'workflows' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}>Workflow Builder</button>}
               {canManageUsers && <button onClick={() => setAdminView('users')} className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${adminView === 'users' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}>Users</button>}
               <button onClick={() => setAdminView('logs')} className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${adminView === 'logs' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}>Audit Logs</button>
+              {canManageUsers && <button onClick={() => setAdminView('offices')} className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${adminView === 'offices' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}>Offices</button>}
               {canManageUsers && <button onClick={() => setAdminView('hierarchy')} className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${adminView === 'hierarchy' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}>Hierarchy</button>}
             </div>
           </div>
@@ -885,6 +954,7 @@ const Dashboard = () => {
 
                 {adminView === 'workflows' && canCreateWorkflows && <WorkflowBuilder />}
                 {adminView === 'hierarchy' && canManageUsers && <RoleManager />}
+                {adminView === 'offices' && canManageUsers && <OfficeManager mode="admin" showToast={showToast} />}
 
                 {adminView === 'users' && canManageUsers && (
                   <div className="flex flex-col gap-6">
@@ -1206,6 +1276,13 @@ const Dashboard = () => {
             Tasks
           </button>
 
+          {myOffices.length > 0 && (
+            <button onClick={() => { setActiveTab('office'); setSearchQuery(''); }} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'office' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
+              <svg className="w-5 h-5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
+              My Office
+            </button>
+          )}
+
           {(canManageUsers || canCreateWorkflows) && (
             <button onClick={() => { setActiveTab('admin'); setSearchQuery(''); }} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'admin' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}>
               <svg className="w-5 h-5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
@@ -1317,6 +1394,19 @@ const Dashboard = () => {
                 {activeTab === 'tasks' && renderTasksView()}
                 {activeTab === 'notifications' && renderNotificationsView()}
                 {activeTab === 'admin' && renderAdminSetupView()}
+                {activeTab === 'office' && (
+                  <div className="space-y-6 w-full max-w-6xl">
+                    <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm">
+                      <h2 className="text-2xl font-bold text-gray-900 tracking-tight">My Office</h2>
+                      <p className="text-gray-500 mt-1 mb-6">
+                        {myOffices.some(o => o.i_am_head)
+                          ? 'You head this office: add or remove officers and set who covers when someone is away. Documents sent to the office appear in everyone\'s Tasks to claim.'
+                          : 'Documents sent to your office appear in Tasks, where anyone in the office can claim them.'}
+                      </p>
+                      <OfficeManager mode="mine" showToast={showToast} />
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
