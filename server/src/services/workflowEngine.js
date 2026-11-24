@@ -157,6 +157,7 @@ const buildBranch = async (db, branchOutcome, parallelNodeId, doc) => {
             roleId: a.roleId,
             departmentId: a.departmentId,
             status: 'Pending',
+            deadline: deadlineFor(branchOutcome.node),
         };
     }
     // The branch reached a merge gate or the end without needing anyone
@@ -310,7 +311,11 @@ const advanceAfterApproval = async (db, doc, flow, user) => {
 
         if (next.kind === 'task') {
             const a = await resolveTaskAssignment(db, next.node, doc.submitter_id);
-            branches[idx] = { ...branch, nodeId: next.node.id, assigneeId: a.assigneeId, roleId: a.roleId, departmentId: a.departmentId, status: 'Pending' };
+            branches[idx] = {
+                parallelNodeId: branch.parallelNodeId, nodeId: next.node.id, status: 'Pending',
+                assigneeId: a.assigneeId, roleId: a.roleId, departmentId: a.departmentId,
+                deadline: deadlineFor(next.node), // each step in a branch gets its own deadline
+            };
             if (a.assigneeId) await notifyAssigned(db, doc, [a.assigneeId], 'Parallel review required');
         } else {
             branches[idx] = { ...branch, status: 'Approved', joinNodeId: next.kind === 'join' ? next.node.id : branch.joinNodeId || null };
