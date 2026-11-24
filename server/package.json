@@ -4,12 +4,15 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "db:setup": "node db/setup.js",
+    "db:reset": "node db/setup.js --reset",
+    "test": "node --test test/"
   },
   "keywords": [],
-  "author": "",
+  "author": "Maraki Teferi",
   "license": "ISC",
-  "description": "",
+  "description": "E-Flow backend: Express + PostgreSQL API for document workflows and approvals",
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",

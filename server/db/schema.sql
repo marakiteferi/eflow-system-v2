@@ -97,18 +97,10 @@ CREATE TABLE audit_logs (
 );
 
 -- ============================================================
--- Seed Data: Legacy roles + a default Super Admin user
+-- Seed data
 -- ============================================================
 
--- Insert a default Super Admin so the system is usable immediately
--- Password: "admin123" (bcrypt hash — change in production!)
-INSERT INTO users (name, email, password_hash, role_id)
-VALUES (
-    'Super Admin',
-    'admin@eflow.edu',
-    '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', -- "password" hashed
-    3
-);
+-- Demo accounts are created by `npm run db:setup` (see db/setup.js).
 
 -- ============================================================
 -- Indexes for performance

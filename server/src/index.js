@@ -10,6 +10,7 @@ if (missingEnv.length > 0) {
 
 const startSlaMonitor = require('./cron/slaMonitor');
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -21,7 +22,9 @@ const PORT = process.env.PORT || 5000;
 // 2. Middleware
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+const UPLOADS_DIR = path.join(__dirname, '../uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+app.use('/uploads', express.static(UPLOADS_DIR));
 // 3. Database Pool
 const pool = new Pool({
     user: process.env.DB_USER,
